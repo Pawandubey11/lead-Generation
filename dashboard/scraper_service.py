@@ -66,6 +66,7 @@ _status: Dict[str, Any] = {
     "total_businesses": 0,
     "cities_completed": 0,
     "total_leads_found": 0,
+    "baseline_leads": 0,
     "progress_pct": 0,
     "logs": [],
     "error": None,
@@ -74,6 +75,18 @@ _status: Dict[str, Any] = {
 }
 
 _log_buffer: deque = deque(maxlen=MAX_LOG_LINES)
+
+
+def _count_live_leads() -> int:
+    path = os.path.join(PROJECT_ROOT, "output", "local_business_leads.csv")
+    if not os.path.isfile(path):
+        return 0
+    try:
+        import pandas as pd
+        df = pd.read_csv(path)
+        return len(df)
+    except Exception:
+        return 0
 
 
 def _reset_status():
@@ -91,6 +104,7 @@ def _reset_status():
         "total_businesses": 0,
         "cities_completed": 0,
         "total_leads_found": 0,
+        "baseline_leads": 0,
         "progress_pct": 0,
         "logs": [],
         "error": None,
@@ -140,7 +154,8 @@ def _progress_callback(event_type: str, data: dict):
 
         elif event_type == "city_done":
             _status["cities_completed"] = data.get("city_index", 0)
-            _status["total_leads_found"] = data.get("total_leads", 0)
+            absolute_total = data.get("total_leads", 0)
+            _status["total_leads_found"] = max(0, absolute_total - _status["baseline_leads"])
             city_leads = data.get("city_leads_count", 0)
             _add_log(f"✅ Completed {data.get('city', '?')} — {city_leads} leads found (total: {data.get('total_leads', 0)})")
 
@@ -159,11 +174,16 @@ def _progress_callback(event_type: str, data: dict):
         elif event_type == "lead_extracted":
             _status["current_business_index"] = data.get("business_index", 0)
             _status["total_businesses"] = data.get("total_businesses", 0)
-            _status["total_leads_found"] = data.get("total_leads", 0)
-            _status["progress_pct"] = max(
-                _status["progress_pct"],
-                min(int((data.get("business_index", 0) / max(data.get("total_businesses", 1), 1)) * 100), 99),
-            )
+            absolute_total = data.get("total_leads", 0)
+            _status["total_leads_found"] = max(0, absolute_total - _status["baseline_leads"])
+            city_index = max(_status["current_city_index"], 1)
+            total_cities = max(_status["total_cities"], 1)
+            business_index = data.get("business_index", 0)
+            total_businesses = max(data.get("total_businesses", 1), 1)
+            completed_before_city = city_index - 1
+            within_city = business_index / total_businesses
+            overall = ((completed_before_city + within_city) / total_cities) * 100
+            _status["progress_pct"] = min(int(overall), 99)
             _add_log(f"✨ Lead extracted: {_status['total_leads_found']} total")
 
         elif event_type == "log":
@@ -258,7 +278,7 @@ def _scrape_worker(business_type: str, scope: str, country: Optional[str], citie
             total = len(df) if df is not None else 0
             _status["state"] = "completed"
             _status["progress_pct"] = 100
-            _status["total_leads_found"] = total
+            _status["total_leads_found"] = max(0, total - _status["baseline_leads"])
             _add_log(f"🎉 Scraping complete! Total leads: {total}")
 
     except ScrapeCancelled:
@@ -351,6 +371,7 @@ def start_scrape(business_type: str, scope: str = "country", country: Optional[s
         _status["total_cities"] = total_c
         _status["current_city"] = (cities.split(",")[0].strip() if scope == "city" and cities else country) or "Starting..."
         _status["started_at"] = time.time()
+        _status["baseline_leads"] = _count_live_leads()
         _add_log(f"🚀 Initializing scraper for '{business_type}' in {location_label}...")
 
         timestamp_str = time.strftime("%Y-%m-%d %H:%M:%S")

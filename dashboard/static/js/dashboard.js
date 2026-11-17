@@ -466,9 +466,16 @@
     state.industry = industry;
 
     const commonCountries = ['germany', 'united states', 'usa', 'united kingdom', 'uk', 'india', 'canada', 'australia', 'france', 'uae'];
-    const isCountry = commonCountries.includes(location.toLowerCase());
+    const locationParts = location.split(',').map(part => part.trim()).filter(Boolean);
+    const isCountryCityPair = locationParts.length === 2;
+    const isCountry = !isCountryCityPair && commonCountries.includes(location.toLowerCase());
 
-    if (isCountry) {
+    if (isCountryCityPair) {
+      $('filter-city').value = locationParts[0];
+      state.city = locationParts[0];
+      $('filter-country').value = locationParts[1];
+      state.country = locationParts[1];
+    } else if (isCountry) {
       $('filter-country').value = location;
       state.country = location;
       $('filter-city').value = '';
@@ -485,8 +492,8 @@
     const payload = {
       business_type: industry,
       scope: isCountry ? 'country' : 'city',
-      country: isCountry ? location : null,
-      cities: isCountry ? null : location,
+      country: isCountry ? location : (isCountryCityPair ? locationParts[1] : null),
+      cities: isCountry ? null : (isCountryCityPair ? locationParts[0] : location),
       max_cities: maxCities,
     };
 

@@ -839,7 +839,7 @@ def scrape_city(business_type, city, p, browser, page, partial_save_callback=Non
             lead["city"] = city
             city_leads.append(lead)
             if partial_save_callback:
-                partial_save_callback(city_leads)
+                partial_save_callback(city_leads, idx + 1, len(business_links))
 
     print(f"\n  Leads collected from {city}: {len(city_leads)}")
     return city_leads, browser, page
@@ -899,7 +899,7 @@ def generate_leads(business_type, country, max_cities=30, custom_cities=None):
                 _notify("city_start", {"city": city, "city_index": city_idx + 1, "total_cities": len(remaining_cities)})
                 print(f"\n[City {city_idx+1}/{len(remaining_cities)}] {city}")
 
-                def save_partial_city(city_leads):
+                def save_partial_city(city_leads, business_index=None, total_businesses=None):
                     scrape_time = time.strftime("%Y-%m-%d %H:%M:%S")
                     partial_rows = []
                     for lead in city_leads:
@@ -927,8 +927,8 @@ def generate_leads(business_type, country, max_cities=30, custom_cities=None):
                     os.replace(_tmp, raw_output)
                     _notify("lead_extracted", {
                         "city": city,
-                        "business_index": len(partial_rows),
-                        "total_businesses": len(partial_rows),
+                        "business_index": business_index or len(partial_rows),
+                        "total_businesses": total_businesses or len(partial_rows),
                         "total_leads": len(df_temp),
                     })
                     _notify("log", {"message": f"💾 Saved partial lead: {len(partial_rows)} in {city}"})
