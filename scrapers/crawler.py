@@ -693,6 +693,8 @@ def scrape_business(link, p, browser, page):
 
             return lead, browser, page
 
+        except ScrapeCancelled:
+            raise
         except Exception as e:
             print(f"  Attempt {attempt+1} failed: {str(e)[:80]}")
             try:
@@ -710,7 +712,7 @@ def scrape_business(link, p, browser, page):
 # SCRAPE ONE CITY
 # ============================================
 
-def scrape_city(business_type, city, p, browser, page):
+def scrape_city(business_type, city, p, browser, page, partial_save_callback=None):
     city_leads = []
     search_query = f"{business_type} in {city}"
 
@@ -836,6 +838,8 @@ def scrape_city(business_type, city, p, browser, page):
         if lead and any([lead["business_name"], lead["phone"], lead["website"], lead["address"]]):
             lead["city"] = city
             city_leads.append(lead)
+            if partial_save_callback:
+                partial_save_callback(city_leads)
 
     print(f"\n  Leads collected from {city}: {len(city_leads)}")
     return city_leads, browser, page
@@ -890,55 +894,77 @@ def generate_leads(business_type, country, max_cities=30, custom_cities=None):
         browser = launch_browser(p)
         page = new_page(browser)
 
-        for city_idx, city in enumerate(remaining_cities):
-            # Allow dashboard to cancel between cities
-            _notify("city_start", {"city": city, "city_index": city_idx + 1, "total_cities": len(remaining_cities)})
-            print(f"\n[City {city_idx+1}/{len(remaining_cities)}] {city}")
-
-            city_leads, browser, page = scrape_city(
-                business_type, city, p, browser, page
-            )
-
-            scrape_time = time.strftime("%Y-%m-%d %H:%M:%S")  # Per-city timestamp (DQ-006)
-            for lead in city_leads:
-                lead["spin"] = friendly_spin
-                lead["scraped_at"] = scrape_time  # Time of THIS city's scrape
-
-            all_leads.extend(city_leads)
-
-            # Mark city as done
-            with open(progress_file, "a") as f:
-                f.write(city + "\n")
-
-            # Save after every city
-            current_run_df = pd.DataFrame(all_leads)
-            if os.path.exists(raw_output):
-                try:
-                    historical_df = pd.read_csv(raw_output)
-                    historical_df = historical_df[historical_df["spin"] != friendly_spin]
-                    df_temp = pd.concat([historical_df, current_run_df], ignore_index=True)
-                except Exception:
-                    df_temp = current_run_df
-            else:
-                df_temp = current_run_df
-
-            df_temp.drop_duplicates(subset=["business_name", "spin"], inplace=True)
-            # Atomic write: write to temp file then rename — prevents dashboard
-            # reading a partially-written CSV (INFRA-003)
-            _tmp = raw_output + ".tmp"
-            df_temp.to_csv(_tmp, index=False)
-            os.replace(_tmp, raw_output)
-
-            print(f"\n  Progress saved — Total leads so far: {len(df_temp)}")
-            _notify("city_done", {"city": city, "city_index": city_idx + 1, "total_cities": len(remaining_cities), "city_leads_count": len(city_leads), "total_leads": len(df_temp)})
-
-            # Small delay between cities
-            time.sleep(1)
-
         try:
-            browser.close()
-        except:
-            pass
+            for city_idx, city in enumerate(remaining_cities):
+                _notify("city_start", {"city": city, "city_index": city_idx + 1, "total_cities": len(remaining_cities)})
+                print(f"\n[City {city_idx+1}/{len(remaining_cities)}] {city}")
+
+                def save_partial_city(city_leads):
+                    scrape_time = time.strftime("%Y-%m-%d %H:%M:%S")
+                    partial_rows = []
+                    for lead in city_leads:
+                        row = lead.copy()
+                        row["spin"] = friendly_spin
+                        row["scraped_at"] = scrape_time
+                        row["city"] = city
+                        partial_rows.append(row)
+
+                    combined = all_leads + partial_rows
+                    current_run_df = pd.DataFrame(combined)
+                    if os.path.exists(raw_output):
+                        try:
+                            historical_df = pd.read_csv(raw_output)
+                            historical_df = historical_df[historical_df["spin"] != friendly_spin]
+                            df_temp = pd.concat([historical_df, current_run_df], ignore_index=True)
+                        except Exception:
+                            df_temp = current_run_df
+                    else:
+                        df_temp = current_run_df
+
+                    df_temp.drop_duplicates(subset=["business_name", "spin"], inplace=True)
+                    _tmp = raw_output + ".tmp"
+                    df_temp.to_csv(_tmp, index=False)
+                    os.replace(_tmp, raw_output)
+                    _notify("log", {"message": f"💾 Saved partial lead: {len(partial_rows)} in {city}"})
+
+                city_leads, browser, page = scrape_city(
+                    business_type, city, p, browser, page, save_partial_city
+                )
+
+                scrape_time = time.strftime("%Y-%m-%d %H:%M:%S")
+                for lead in city_leads:
+                    lead["spin"] = friendly_spin
+                    lead["scraped_at"] = scrape_time
+
+                all_leads.extend(city_leads)
+
+                with open(progress_file, "a") as f:
+                    f.write(city + "\n")
+
+                current_run_df = pd.DataFrame(all_leads)
+                if os.path.exists(raw_output):
+                    try:
+                        historical_df = pd.read_csv(raw_output)
+                        historical_df = historical_df[historical_df["spin"] != friendly_spin]
+                        df_temp = pd.concat([historical_df, current_run_df], ignore_index=True)
+                    except Exception:
+                        df_temp = current_run_df
+                else:
+                    df_temp = current_run_df
+
+                df_temp.drop_duplicates(subset=["business_name", "spin"], inplace=True)
+                _tmp = raw_output + ".tmp"
+                df_temp.to_csv(_tmp, index=False)
+                os.replace(_tmp, raw_output)
+
+                print(f"\n  Progress saved — Total leads so far: {len(df_temp)}")
+                _notify("city_done", {"city": city, "city_index": city_idx + 1, "total_cities": len(remaining_cities), "city_leads_count": len(city_leads), "total_leads": len(df_temp)})
+                time.sleep(1)
+        finally:
+            try:
+                browser.close()
+            except Exception:
+                pass
 
     # Final save
     current_run_df = pd.DataFrame(all_leads)

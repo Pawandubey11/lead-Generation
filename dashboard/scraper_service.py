@@ -253,8 +253,30 @@ def _scrape_worker(business_type: str, scope: str, country: Optional[str], citie
 
     except ScrapeCancelled:
         with _lock:
+            _status["state"] = "stopping"
+            _add_log("⛔ Scrape stopped — preserving partial leads…")
+
+        cleaner_path = os.path.join(PROJECT_ROOT, "lead_cleaner.py")
+        try:
+            result = subprocess.run(
+                [sys.executable, cleaner_path],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode == 0:
+                _add_log("✅ Partial leads saved and cleaned")
+            elif result.returncode == 2:
+                _add_log("ℹ️ Stop completed — no leads available to clean")
+            else:
+                _add_log(f"⚠️ Partial cleaner exited with code {result.returncode}")
+        except Exception as cleaner_error:
+            _add_log(f"⚠️ Could not clean partial leads: {cleaner_error}")
+
+        with _lock:
             _status["state"] = "completed"
-            _add_log("⛔ Scrape was cancelled by user")
+            _status["progress_pct"] = max(_status["progress_pct"], 1)
 
     except Exception as e:
         with _lock:
