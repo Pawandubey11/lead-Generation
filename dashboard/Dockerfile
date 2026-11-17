@@ -2,7 +2,7 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies for Playwright/Chromium
+# Install system dependencies required by Playwright/Chromium
 RUN apt-get update && apt-get install -y \
     wget \
     curl \
@@ -20,24 +20,24 @@ RUN apt-get update && apt-get install -y \
     libxfixes3 \
     libxrandr2 \
     libgbm1 \
-    libasound2 \
+    libasound2t64 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
-COPY requirements.txt ./requirements.txt
-COPY dashboard/requirements.txt ./dashboard_requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt -r dashboard_requirements.txt
+# Install Python dependencies from root requirements.txt only
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Chromium browser for Playwright
+# Install Chromium browser for Playwright (used by scraper_service inside dashboard)
 RUN python -m playwright install chromium
 
-# Copy all files from root context
+# Copy all project files
 COPY . .
 
-# Create output and logs directories
+# Ensure output and logs directories exist
 RUN mkdir -p /app/output /app/logs
 
 EXPOSE 8000
 
-# Run from root so sys.path resolves correctly
-CMD ["uvicorn", "dashboard.app:app", "--host", "0.0.0.0", "--port", "8000"]
+# Launch FastAPI dashboard via uvicorn
+# Running from /app so relative imports (scrapers.crawler, config.config) resolve correctly
+CMD ["uvicorn", "dashboard.app:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
