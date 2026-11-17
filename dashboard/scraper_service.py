@@ -156,6 +156,16 @@ def _progress_callback(event_type: str, data: dict):
             _status["current_business_index"] = data.get("business_index", 0)
             _status["total_businesses"] = data.get("total_businesses", 0)
 
+        elif event_type == "lead_extracted":
+            _status["current_business_index"] = data.get("business_index", 0)
+            _status["total_businesses"] = data.get("total_businesses", 0)
+            _status["total_leads_found"] = data.get("total_leads", 0)
+            _status["progress_pct"] = max(
+                _status["progress_pct"],
+                min(int((data.get("business_index", 0) / max(data.get("total_businesses", 1), 1)) * 100), 99),
+            )
+            _add_log(f"✨ Lead extracted: {_status['total_leads_found']} total")
+
         elif event_type == "log":
             _add_log(data.get("message", ""))
 

@@ -550,6 +550,7 @@
         $('progress-leads-count').textContent = (s.total_leads_found || 0).toLocaleString();
         $('progress-pct-text').textContent = `${s.progress_pct || 0}%`;
         $('progress-fill-bar').style.width = `${s.progress_pct || 0}%`;
+        await loadInitialLeads();
       } else {
         if (state.scraper.isRunning) {
           state.scraper.isRunning = false;

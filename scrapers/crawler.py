@@ -925,6 +925,12 @@ def generate_leads(business_type, country, max_cities=30, custom_cities=None):
                     _tmp = raw_output + ".tmp"
                     df_temp.to_csv(_tmp, index=False)
                     os.replace(_tmp, raw_output)
+                    _notify("lead_extracted", {
+                        "city": city,
+                        "business_index": len(partial_rows),
+                        "total_businesses": len(partial_rows),
+                        "total_leads": len(df_temp),
+                    })
                     _notify("log", {"message": f"💾 Saved partial lead: {len(partial_rows)} in {city}"})
 
                 city_leads, browser, page = scrape_city(
