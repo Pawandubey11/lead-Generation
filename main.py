@@ -21,11 +21,16 @@ if len(sys.argv) >= 3:
     print(f"  Max Cities    : {max_cities}\n")
 
 else:
-    # Interactive mode
-    business_type = input("Enter business type (e.g. gym, salon, restaurant): ").strip()
-    country = input("Enter country (e.g. india, usa, uk): ").strip()
-    max_cities_input = input("Max cities to scrape (default 30, press Enter to skip): ").strip()
+    # Docker/CI mode, or interactive mode
+    business_type = os.environ.get("LEADPULSE_BUSINESS_TYPE", "").strip()
+    country = os.environ.get("LEADPULSE_COUNTRY", "").strip()
+    max_cities_input = os.environ.get("LEADPULSE_MAX_CITIES", "").strip()
     max_cities = int(max_cities_input) if max_cities_input else 30
+
+    if not business_type:
+        business_type = input("Enter business type (e.g. gym, salon, restaurant): ").strip()
+    if not country:
+        country = input("Enter country (e.g. india, usa, uk): ").strip()
 
 if not business_type or not country:
     print("ERROR: Business type and country cannot be empty.")

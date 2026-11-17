@@ -18,7 +18,9 @@ services:
     # Optional: pass search query as env var to skip the input() prompt
     # Uncomment and set a value to run non-interactively
     # environment:
-    #   - SEARCH_QUERY=restaurants in Bhopal
+    #   - LEADPULSE_BUSINESS_TYPE=gym
+    #   - LEADPULSE_COUNTRY=india
+    #   - LEADPULSE_MAX_CITIES=30
 
   dashboard:
     build:
