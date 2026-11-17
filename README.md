@@ -46,6 +46,10 @@ flowchart LR
 
 This means the application does not wait for every city or the entire crawl to finish before displaying discovered leads.
 
+## Project overview graphic
+
+![LeadPulse project architecture](docs/leadpulse-project-overview.svg)
+
 ## Screenshot and UI areas
 
 The dashboard includes:
