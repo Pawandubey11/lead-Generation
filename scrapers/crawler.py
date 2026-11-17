@@ -550,7 +550,13 @@ def extract_socials_and_email(url):
                 "Chrome/120.0.0.0 Safari/537.36"
             )
         }
-        response = requests.get(url, headers=headers, timeout=15, verify=False)
+        response = requests.get(
+            url,
+            headers=headers,
+            timeout=(3, 8),
+            verify=False,
+            allow_redirects=True,
+        )
         html = response.text
         soup = BeautifulSoup(html, "html.parser")
 
@@ -613,17 +619,17 @@ def scrape_business(link, p, browser, page):
                 browser = launch_browser(p)
                 page = new_page(browser)
 
-            page.goto(link, wait_until="domcontentloaded", timeout=45000)
-            page.wait_for_timeout(3000)
+            page.goto(link, wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(800)
 
             # Dismiss consent wall — may redirect then land back on the business page
             dismissed = dismiss_consent_wall(page)
             if dismissed:
-                page.wait_for_timeout(2000)
+                page.wait_for_timeout(800)
 
             # Wait for details panel h1 element to load
             try:
-                page.wait_for_selector("h1", timeout=12000)
+                page.wait_for_selector("h1", timeout=4000)
             except Exception:
                 pass
 
@@ -639,7 +645,7 @@ def scrape_business(link, p, browser, page):
                 return None, browser, page
 
             try:
-                business_name = clean_text(page.locator("h1").first.inner_text(timeout=8000))
+                business_name = clean_text(page.locator("h1").first.inner_text(timeout=3000))
             except:
                 business_name = ""
 
@@ -656,17 +662,17 @@ def scrape_business(link, p, browser, page):
                 return None, browser, page
 
             try:
-                phone = clean_text(page.locator('button[data-item-id*="phone"]').first.inner_text(timeout=8000))
+                phone = clean_text(page.locator('button[data-item-id*="phone"]').first.inner_text(timeout=3000))
             except:
                 phone = ""
 
             try:
-                address = clean_text(page.locator('button[data-item-id="address"]').first.inner_text(timeout=8000))
+                address = clean_text(page.locator('button[data-item-id="address"]').first.inner_text(timeout=3000))
             except:
                 address = ""
 
             try:
-                website = page.locator('a[data-item-id="authority"]').first.get_attribute("href", timeout=8000)
+                website = page.locator('a[data-item-id="authority"]').first.get_attribute("href", timeout=3000)
             except:
                 website = ""
 
@@ -680,7 +686,9 @@ def scrape_business(link, p, browser, page):
                 "instagram": socials["instagram"],
                 "facebook": socials["facebook"],
                 "linkedin": socials["linkedin"],
-                "email": socials["email"]
+                "email": socials["email"],
+                "source_name": "Google Maps",
+                "source_url": link,
             }
 
             return lead, browser, page
@@ -693,7 +701,7 @@ def scrape_business(link, p, browser, page):
                 pass
             browser = launch_browser(p)
             page = new_page(browser)
-            time.sleep(3)
+            time.sleep(1)
 
     return None, browser, page
 
@@ -725,13 +733,13 @@ def scrape_city(business_type, city, p, browser, page):
             browser = launch_browser(p)
             page = new_page(browser)
 
-        page.goto(search_url, wait_until="domcontentloaded", timeout=120000)
-        time.sleep(5)
+        page.goto(search_url, wait_until="domcontentloaded", timeout=60000)
+        time.sleep(1)
 
         # ---- Handle Google's consent wall ----
         dismiss_consent_wall(page)
 
-        time.sleep(3)
+        time.sleep(1)
         
         # Robust feed selector detection
         scrollable_div = None
@@ -745,7 +753,7 @@ def scrape_city(business_type, city, p, browser, page):
 
         if not scrollable_div:
             try:
-                page.wait_for_selector('div[role="feed"], a[href*="/place/"]', timeout=15000)
+                page.wait_for_selector('div[role="feed"], a[href*="/place/"]', timeout=8000)
                 if page.locator('div[role="feed"]').count() > 0:
                     scrollable_div = page.locator('div[role="feed"]').first
                 else:
@@ -765,12 +773,12 @@ def scrape_city(business_type, city, p, browser, page):
     same_count = 0
 
     is_quick = os.environ.get("QUICK_SCRAPE") == "true"
-    max_scrolls = 2 if is_quick else 80
+    max_scrolls = 2 if is_quick else 30
 
     for i in range(max_scrolls):
         try:
             scrollable_div.evaluate("(el) => el.scrollTop = el.scrollHeight")
-            time.sleep(2 if is_quick else 3)
+            time.sleep(1 if is_quick else 2)
             cards = scrollable_div.locator('a[href*="/place/"]').all()
             current_count = len(cards)
             print(f"  Scroll {i+1} | Businesses: {current_count}")
@@ -782,7 +790,7 @@ def scrape_city(business_type, city, p, browser, page):
 
             previous_count = current_count
 
-            if same_count >= 6:
+            if same_count >= 4:
                 break
         except:
             break
@@ -807,6 +815,8 @@ def scrape_city(business_type, city, p, browser, page):
         business_links = business_links[:int(max_biz_env)]
     elif is_quick:
         business_links = business_links[:3]
+    else:
+        business_links = business_links[:20]
 
     print(f"\n  Found {len(business_links)} businesses in {city}")
     _notify("businesses_found", {"city": city, "total_businesses": len(business_links)})
@@ -923,7 +933,7 @@ def generate_leads(business_type, country, max_cities=30, custom_cities=None):
             _notify("city_done", {"city": city, "city_index": city_idx + 1, "total_cities": len(remaining_cities), "city_leads_count": len(city_leads), "total_leads": len(df_temp)})
 
             # Small delay between cities
-            time.sleep(2)
+            time.sleep(1)
 
         try:
             browser.close()

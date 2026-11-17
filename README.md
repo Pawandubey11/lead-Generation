@@ -24,6 +24,14 @@ Open <http://127.0.0.1:8000>.
 Setup creates `.venv`, installs dependencies and Chromium, and copies `.env.example` to `.env`.
 The dashboard works in development mode without manually configuring the environment.
 
+For faster scraping, set `QUICK_SCRAPE=true` and optionally
+`MAX_BIZ_PER_CITY=10` in your environment or before starting the app. Quick mode
+uses fewer scroll passes and checks fewer businesses per city.
+
+Each newly scraped lead includes `source_name` and `source_url` provenance fields.
+Google Maps is identified as the primary source, and `scraped_at` records when
+the listing was collected.
+
 ## Run the scraper CLI
 
 ```powershell

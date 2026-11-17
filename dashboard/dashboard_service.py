@@ -64,6 +64,8 @@ RAW_COLUMNS = [
     "Priority",
     "spin",
     "scraped_at",
+    "source_name",
+    "source_url",
 ]
 
 RENAME_MAP = {
@@ -91,6 +93,8 @@ STRING_FIELDS = [
     "priority",
     "spin",
     "scraped_at",
+    "source_name",
+    "source_url",
 ]
 
 TABLE_FIELDS = [
@@ -107,6 +111,8 @@ TABLE_FIELDS = [
     "contact_completeness",
     "spin",
     "scraped_at",
+    "source_name",
+    "source_url",
 ]
 
 DETAIL_EXTRA_FIELDS = ["address", "city", "has_website", "has_email", "has_social_media"]
@@ -957,6 +963,8 @@ CUSTOM_FIELD_LABEL_MAP = {
     "linkedin": "LinkedIn",
     "spin": "Search Query / Niche",
     "scraped_at": "Extracted Date",
+    "source_name": "Data Source",
+    "source_url": "Source URL",
 }
 
 def export_custom_dataset(
