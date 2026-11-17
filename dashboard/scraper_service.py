@@ -22,7 +22,14 @@ import sys
 import threading
 import time
 from collections import deque
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
+
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
+    except Exception:
+        pass
 
 # ---------------------------------------------------------------------------
 # Resolve project root so we can import the crawler package
@@ -45,7 +52,7 @@ _cancel_event = threading.Event()
 _worker_thread: Optional[threading.Thread] = None
 
 MAX_LOG_LINES = 100
-_run_history: List[Dict[str, Any]] = []
+_run_history: deque = deque(maxlen=50)  # Bounded — avoids unbounded memory growth
 
 _status: Dict[str, Any] = {
     "state": "idle",         # idle | running | stopping | completed | error
@@ -174,7 +181,7 @@ def _update_last_history_entry():
 # Worker thread
 # ---------------------------------------------------------------------------
 
-def _scrape_worker(business_type: str, country: str, max_cities: int):
+def _scrape_worker(business_type: str, scope: str, country: Optional[str], cities_str: Optional[str], max_cities: int):
     """Runs in a background thread. Calls generate_leads() and lead_cleaner."""
     try:
         from scrapers.crawler import (
@@ -185,12 +192,33 @@ def _scrape_worker(business_type: str, country: str, max_cities: int):
         )
         set_progress_callback(_progress_callback)
 
+        # Remove old progress.txt so past completed cities do not cause skips
+        progress_file = os.path.join(PROJECT_ROOT, "output", "progress.txt")
+        if os.path.exists(progress_file):
+            try:
+                os.remove(progress_file)
+            except Exception:
+                pass
+
+        custom_cities = None
+        target_location = country
+        if scope in ("city", "cities") or cities_str:
+            scope = "city"
+            if cities_str:
+                custom_cities = [c.strip() for c in cities_str.split(",") if c.strip()]
+            elif country:
+                custom_cities = [c.strip() for c in country.split(",") if c.strip()]
+            target_location = ", ".join(custom_cities) if custom_cities else "Unknown"
+
         with _lock:
             _status["state"] = "running"
-            _add_log(f"🚀 Starting scrape: {business_type} in {country} (max {max_cities} cities)")
+            if scope == "city":
+                _add_log(f"🚀 Starting scrape: {business_type} in custom locations: {target_location}")
+            else:
+                _add_log(f"🚀 Starting scrape: {business_type} in {country} (max {max_cities} cities)")
 
-        # ---- Run the crawler (unchanged logic) ----
-        df = generate_leads(business_type, country, max_cities=max_cities)
+        # ---- Run the crawler ----
+        df = generate_leads(business_type, target_location, max_cities=max_cities, custom_cities=custom_cities)
 
         # ---- Run lead cleaner (same as main.py does) ----
         with _lock:
@@ -249,68 +277,87 @@ def _scrape_worker(business_type: str, country: str, max_cities: int):
 # Public API
 # ---------------------------------------------------------------------------
 
-def start_scrape(business_type: str, country: str, max_cities: int = 30) -> Dict[str, Any]:
+def start_scrape(business_type: str, scope: str = "country", country: Optional[str] = None, cities: Optional[str] = None, max_cities: int = 30) -> Dict[str, Any]:
     """
     Start a scrape job in the background.
-    Returns {"ok": True} or {"ok": False, "error": "..."}.
+    Returns {"ok": True, "status": "started"} or {"ok": False, "status": "error", "error": "..."}.
     """
     global _worker_thread
 
     business_type = (business_type or "").strip()
     country = (country or "").strip()
+    cities = (cities or "").strip()
+    scope = (scope or "country").strip().lower()
+
+    if scope in ("city", "cities") or (cities and not country):
+        scope = "city"
+        if not cities and country:
+            cities = country
+            country = ""
 
     if not business_type:
-        return {"ok": False, "error": "Business type is required"}
-    if not country:
-        return {"ok": False, "error": "Country is required"}
-    if max_cities < 1:
-        return {"ok": False, "error": "Max cities must be at least 1"}
+        return {"ok": False, "status": "error", "error": "Business type is required", "message": "Business type is required"}
+    if scope == "country" and not country:
+        return {"ok": False, "status": "error", "error": "Country is required", "message": "Country is required"}
+    if scope == "city" and not cities:
+        return {"ok": False, "status": "error", "error": "Target city is required", "message": "Target city is required"}
+    if scope == "country" and max_cities < 1:
+        return {"ok": False, "status": "error", "error": "Max cities must be at least 1", "message": "Max cities must be at least 1"}
 
     with _lock:
         if _status["state"] == "running":
-            return {"ok": False, "error": "A scrape is already running"}
+            return {"ok": False, "status": "already_running", "error": "A scrape is already running", "message": "A scrape is already running"}
 
         _reset_status()
         _cancel_event.clear()
         _status["state"] = "running"
         _status["business_type"] = business_type
-        _status["country"] = country
-        _status["max_cities"] = max_cities
+        location_label = f"City: {cities}" if scope == "city" else country
+        _status["country"] = location_label
+        total_c = len([c for c in cities.split(",") if c.strip()]) if scope == "city" else max_cities
+        _status["max_cities"] = total_c
+        _status["total_cities"] = total_c
+        _status["current_city"] = (cities.split(",")[0].strip() if scope == "city" and cities else country) or "Starting..."
         _status["started_at"] = time.time()
+        _add_log(f"🚀 Initializing scraper for '{business_type}' in {location_label}...")
 
-        # Add to run history
         timestamp_str = time.strftime("%Y-%m-%d %H:%M:%S")
+        spin_str = f"{business_type} in {location_label} ({timestamp_str[:16]})"
+        _status["spin"] = spin_str
+
+        # Add to run history (deque is bounded at 50 entries)
         _run_history.append({
             "id": len(_run_history) + 1,
             "business_type": business_type,
-            "country": country,
-            "max_cities": max_cities,
+            "country": location_label,
+            "max_cities": len([c for c in cities.split(",") if c.strip()]) if scope == "city" else max_cities,
             "status": "running",
             "timestamp": timestamp_str,
             "leads_found": 0,
-            "duration": "0s"
+            "duration": "0s",
+            "spin": spin_str,
         })
 
     _worker_thread = threading.Thread(
         target=_scrape_worker,
-        args=(business_type, country, max_cities),
+        args=(business_type, scope, country, cities, max_cities),
         daemon=True,
         name="scraper-worker",
     )
     _worker_thread.start()
 
-    return {"ok": True}
+    return {"ok": True, "status": "started", "message": "Scraper started successfully."}
 
 
 def stop_scrape() -> Dict[str, Any]:
     """Signal the running scrape to stop after the current operation."""
     with _lock:
         if _status["state"] not in ("running",):
-            return {"ok": False, "error": "No scrape is currently running"}
+            return {"ok": False, "status": "not_running", "error": "No scrape is currently running", "message": "No scrape is currently running"}
         _cancel_event.set()
         _status["state"] = "stopping"
         _add_log("⏹️ Stop requested — will halt after current city/business finishes…")
-    return {"ok": True}
+    return {"ok": True, "status": "stopping", "message": "Stop requested."}
 
 
 def get_scrape_status() -> Dict[str, Any]:
@@ -320,5 +367,5 @@ def get_scrape_status() -> Dict[str, Any]:
         # Compute live elapsed time if running
         if result["state"] in ("running", "stopping") and result["started_at"]:
             result["elapsed_seconds"] = int(time.time() - result["started_at"])
-        result["run_history"] = list(_run_history)
+        result["run_history"] = list(_run_history)  # deque → list for JSON serialization
         return result

@@ -1,3 +1,5 @@
+import os
+
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -12,6 +14,6 @@ OUTPUT_FILE = "output/local_business_leads.csv"
 # ============================================
 # N8N WEBHOOK CONFIG
 # ============================================
-N8N_WEBHOOK_URL = "https://n8n.systemaops.com/webhook/e8069d15-ccfc-4186-b70c-1936b4c728a7"
-N8N_WEBHOOK_SECRET = ""
-N8N_SEND_ON_COMPLETION = True
+N8N_WEBHOOK_URL = os.environ.get("N8N_WEBHOOK_URL", "")
+N8N_WEBHOOK_SECRET = os.environ.get("N8N_WEBHOOK_SECRET", "")
+N8N_SEND_ON_COMPLETION = os.environ.get("N8N_SEND_ON_COMPLETION", "false").lower() == "true"

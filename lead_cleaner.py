@@ -1,14 +1,26 @@
 import pandas as pd
+import numpy as np
 import os
+import re
 import requests
 import json
 import math
 import sys
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
+    except Exception:
+        pass
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+OUTPUT_DIR = os.path.join(PROJECT_ROOT, "output")
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+sys.path.insert(0, PROJECT_ROOT)
 from config.config import N8N_WEBHOOK_URL, N8N_WEBHOOK_SECRET, N8N_SEND_ON_COMPLETION
 
-input_file = "output/local_business_leads.csv"
+input_file = os.path.join(OUTPUT_DIR, "local_business_leads.csv")
 
 if not os.path.exists(input_file) or os.path.getsize(input_file) == 0:
     print("No leads CSV found (or file is empty) — skipping cleaner.")
@@ -58,47 +70,80 @@ df = df[~((df["phone"] != "") & df.duplicated(subset=["phone", "spin"]))]
 df = df[df["business_name"].str.strip() != ""]
 
 # ----------------------------------------
-# FEATURE ENGINEERING
+# FEATURE ENGINEERING (Vectorized)
 # ----------------------------------------
+# (numpy already imported at top)
 
-def has_social_media(row):
-    return any([row["instagram"] != "", row["facebook"] != "", row["linkedin"] != ""])
+has_phone = df["phone"].astype(str).str.strip() != ""
+has_web = df["website"].astype(str).str.strip() != ""
+has_em = df["email"].astype(str).str.strip() != ""
+has_ig = df["instagram"].astype(str).str.strip() != ""
+has_fb = df["facebook"].astype(str).str.strip() != ""
+has_li = df["linkedin"].astype(str).str.strip() != ""
 
-def completeness(row):
-    fields = ["phone", "website", "email", "instagram", "facebook", "linkedin"]
-    filled = sum(1 for f in fields if str(row[f]).strip() != "")
-    return round((filled / len(fields)) * 100, 2)
+has_social = has_ig | has_fb | has_li
 
-def lead_score(row):
-    score = 0
-    if row["phone"] != "":     score += 20
-    if row["website"] != "":   score += 20
-    if row["email"] != "":     score += 40
-    if row["instagram"] != "": score += 10
-    if row["facebook"] != "":  score += 5
-    if row["linkedin"] != "":  score += 5
-    return score
+df["Has Website"] = np.where(has_web, "Yes", "No")
+df["Has Email"] = np.where(has_em, "Yes", "No")
+df["Has Social Media"] = np.where(has_social, "Yes", "No")
 
-def priority(score):
-    if score >= 70: return "Hot"
-    elif score >= 40: return "Warm"
-    return "Cold"
+filled_count = (has_phone.astype(int) + has_web.astype(int) + has_em.astype(int) +
+                has_ig.astype(int) + has_fb.astype(int) + has_li.astype(int))
+df["Contact Completeness %"] = (filled_count / 6.0 * 100).round(2)
 
-df["Has Website"]            = df["website"].apply(lambda x: "Yes" if str(x).strip() else "No")
-df["Has Email"]              = df["email"].apply(lambda x: "Yes" if str(x).strip() else "No")
-df["Has Social Media"]       = df.apply(lambda row: "Yes" if has_social_media(row) else "No", axis=1)
-df["Contact Completeness %"] = df.apply(completeness, axis=1)
-df["Lead Score"]             = df.apply(lead_score, axis=1)
-df["Priority"]               = df["Lead Score"].apply(priority)
+score = (has_phone.astype(int) * 20 +
+         has_web.astype(int) * 20 +
+         has_em.astype(int) * 40 +
+         has_ig.astype(int) * 10 +
+         has_fb.astype(int) * 5 +
+         has_li.astype(int) * 5)
+df["Lead Score"] = score
+
+priority_conditions = [score >= 70, score >= 40]
+priority_choices = ["Hot", "Warm"]
+df["Priority"] = np.select(priority_conditions, priority_choices, default="Cold")
 
 df = df.sort_values(by="Lead Score", ascending=False)
 
 # ----------------------------------------
-# SAVE  (unchanged — still saves to output/)
+# EMAIL QUALITY FILTERING (DQ-001)
 # ----------------------------------------
 
-output_file = "output/final_ai_leads.csv"
-df.to_csv(output_file, index=False)
+# Placeholder / generic emails that look valid but bounce or are not decision-maker inboxes
+_PLACEHOLDER_EMAIL_RE = re.compile(
+    r'^(info|contact|admin|hello|support|noreply|no-reply|sales|webmaster|test|example|postmaster|office)@',
+    re.IGNORECASE
+)
+_EMAIL_RE = re.compile(r'^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$')
+
+def is_quality_email(email: str) -> bool:
+    """Returns True only for syntactically valid, non-placeholder emails."""
+    s = str(email).strip()
+    if not s or s in ("nan", "0", "None"):
+        return False
+    if not _EMAIL_RE.match(s):
+        return False
+    if _PLACEHOLDER_EMAIL_RE.match(s):
+        return False
+    return True
+
+# Replace the simple '@' check with the quality check for verified export
+verified_mask = df["email"].apply(is_quality_email) | (df["Contact Completeness %"] >= 50)
+df_verified = df[verified_mask].copy()
+
+# ----------------------------------------
+# SAVE (atomic writes to prevent race conditions with dashboard reads — INFRA-003)
+# ----------------------------------------
+
+output_file = os.path.join(OUTPUT_DIR, "final_ai_leads.csv")
+_tmp = output_file + ".tmp"
+df.to_csv(_tmp, index=False)
+os.replace(_tmp, output_file)
+
+verified_output_file = os.path.join(OUTPUT_DIR, "verified_leads_export.csv")
+_tmp_v = verified_output_file + ".tmp"
+df_verified.to_csv(_tmp_v, index=False)
+os.replace(_tmp_v, verified_output_file)
 
 # ----------------------------------------
 # SUMMARY
@@ -109,10 +154,12 @@ warm = len(df[df["Priority"] == "Warm"])
 cold = len(df[df["Priority"] == "Cold"])
 
 print(f"Cleaned Leads : {len(df)}")
+print(f"Verified Leads: {len(df_verified)}")
 print(f"  Hot  (70+)  : {hot}")
 print(f"  Warm (40-69): {warm}")
 print(f"  Cold (<40)  : {cold}")
 print(f"\nSaved to: {output_file}")
+print(f"Verified Leads Saved to: {verified_output_file}")
 print("\nLead Cleaning Complete!")
 
 # ----------------------------------------

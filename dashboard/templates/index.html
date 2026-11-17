@@ -1,388 +1,279 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Lead Generation Dashboard</title>
-
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-<link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
-<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-<link href="/static/css/style.css" rel="stylesheet">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LeadPulse — Smart B2B Scraper & Verified Exporter</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
-
-<div class="app-shell">
-
-  <!-- ===================== SIDEBAR ===================== -->
-  <aside class="sidebar" id="sidebar">
-    <div class="sidebar-brand">
-      <div class="brand-mark"><i class="bi bi-lightning-charge-fill"></i></div>
-      <div class="brand-text">
-        <span class="brand-title">LeadPulse</span>
-        <span class="brand-subtitle">Lead Generation</span>
-      </div>
-    </div>
-
-    <nav class="sidebar-nav">
-      <a class="nav-link active" data-tab="scraper">
-        <i class="bi bi-rocket-takeoff-fill"></i> Scraper
-      </a>
-      <a class="nav-link" data-tab="overview">
-        <i class="bi bi-grid-1x2-fill"></i> Dashboard
-      </a>
-      <a class="nav-link" data-tab="leads">
-        <i class="bi bi-table"></i> Leads Database
-      </a>
-    </nav>
-
-    <div class="sidebar-footer">
-      <div class="sync-status">
-        <span class="sync-dot" id="syncDot"></span>
-        <span id="syncText">Live · refreshes every 30s</span>
-      </div>
-      <div class="last-updated" id="lastUpdated">Never updated</div>
-    </div>
-  </aside>
-
-  <!-- ===================== MAIN CONTENT ===================== -->
-  <div class="main-area">
-
-    <!-- Top bar -->
-    <header class="topbar">
-      <button class="sidebar-toggle d-lg-none" id="sidebarToggle"><i class="bi bi-list"></i></button>
-      <div class="topbar-title">
-        <h1 id="topbarTitle">Scraper Control</h1>
-        <p id="topbarSubtitle">Configure and run background scrape jobs.</p>
-      </div>
-      <div class="topbar-actions">
-        <div class="global-scraper-badge" id="globalScraperBadge">
-          <span class="badge-pulse"></span> Scraper Active
+  <div class="app-layout">
+    
+    <!-- Top Header -->
+    <header class="app-header">
+      <div class="brand-block">
+        <div class="brand-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"></path>
+          </svg>
         </div>
-        <button class="btn btn-refresh" id="refreshBtn">
-          <i class="bi bi-arrow-clockwise"></i>
-        </button>
+        <div>
+          <div class="brand-title">
+            <span>LeadPulse Scraper</span>
+            <span class="verified-pill">✓ Verified Only</span>
+          </div>
+          <span class="brand-subtitle">Extract and export fresh business leads directly to Excel & CSV with custom criteria</span>
+        </div>
+      </div>
+
+      <div class="header-status-box">
+        <div class="status-dot"></div>
+        <span>Matching Leads: <strong id="header-total-leads" style="color:#10B981;">0</strong></span>
       </div>
     </header>
 
-    <main class="content">
+    <!-- Step 1: Scraper Configuration Card -->
+    <section class="card scraper-hero-card">
+      <div class="card-body">
+        <form id="scraper-form" onsubmit="event.preventDefault(); window.LeadScraperApp.startScrape();">
+          <div class="scraper-form-grid">
+            
+            <!-- Industry Input -->
+            <div class="form-group">
+              <label class="form-label" for="input-industry">
+                <span>1. Target Industry / Business Niche</span>
+              </label>
+              <input type="text" id="input-industry" class="form-control" placeholder="e.g. Dental Clinics, Solar Companies, Real Estate, Gyms" required>
+            </div>
 
-      <!-- No data banner -->
-      <div id="noDataBanner" class="no-data-banner d-none">
-        <i class="bi bi-inboxes"></i>
-        <div>
-          <h3>No leads generated yet.</h3>
-          <p>Run the scraper pipeline from the Scraper tab to populate leads. The dashboard will pick them up automatically.</p>
+            <!-- Location Input -->
+            <div class="form-group">
+              <label class="form-label" for="input-location">
+                <span>2. Target City or Country</span>
+              </label>
+              <input type="text" id="input-location" class="form-control" placeholder="e.g. London, Berlin, Germany, New York, Texas" required>
+            </div>
+
+            <!-- Max Cities / Depth -->
+            <div class="form-group">
+              <label class="form-label" for="input-max-cities">
+                <span>Max Hubs</span>
+              </label>
+              <select id="input-max-cities" class="form-select">
+                <option value="5">5 Cities (Fast ~1m)</option>
+                <option value="10" selected>10 Cities</option>
+                <option value="20">20 Cities</option>
+                <option value="40">40 Cities</option>
+              </select>
+            </div>
+
+            <!-- Action Button -->
+            <div>
+              <button type="submit" class="btn btn-primary" id="btn-start-scrape" style="width:100%;">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                </svg>
+                <span>Start Scraping</span>
+              </button>
+              <button type="button" class="btn btn-danger" id="btn-stop-scrape" style="display:none; width:100%;" onclick="window.LeadScraperApp.stopScrape()">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="6" y="6" width="12" height="12"></rect>
+                </svg>
+                <span>Stop Crawler</span>
+              </button>
+            </div>
+          </div>
+        </form>
+
+        <!-- Quick Pick Suggested Niches -->
+        <div class="quick-tags-row">
+          <span class="tag-label">Quick Ideas:</span>
+          <span class="quick-tag" style="background:rgba(14,165,233,0.2); border-color:#0ea5e9; color:#38bdf8; font-weight:700;" onclick="window.LeadScraperApp.setIndustry('Software Companies / Softwareunternehmen')">🇩🇪 B2B Software</span>
+          <span class="quick-tag" style="background:rgba(16,185,129,0.15); border-color:#10b981; color:#34d399;" onclick="window.LeadScraperApp.setIndustry('Wholesale / B2B Distributors')">B2B Distributors</span>
+          <span class="quick-tag" onclick="window.LeadScraperApp.setIndustry('Dental Clinics')">Dental Clinics</span>
+          <span class="quick-tag" onclick="window.LeadScraperApp.setIndustry('Solar Energy Contractors')">Solar Energy</span>
+          <span class="quick-tag" onclick="window.LeadScraperApp.setIndustry('Real Estate Agencies')">Real Estate</span>
+          <span class="quick-tag" onclick="window.LeadScraperApp.setIndustry('AI & IT Agencies')">AI Agencies</span>
+          <span class="quick-tag" onclick="window.LeadScraperApp.setIndustry('Law Firms')">Law Firms</span>
+          <span class="quick-tag" onclick="window.LeadScraperApp.setIndustry('Fitness & Gyms')">Fitness Centers</span>
+          <span class="quick-tag" onclick="window.LeadScraperApp.setIndustry('Accounting & Tax')">Accountants</span>
+        </div>
+
+        <!-- Live Progress Banner (Expands when active) -->
+        <div class="scraper-progress-banner" id="scraper-progress-banner">
+          <div class="progress-top-row">
+            <div class="progress-title-block">
+              <div class="radar-spinner"></div>
+              <span style="font-weight:700; color:#fff;" id="progress-state-text">Crawling Google Maps Data...</span>
+              <span style="color:#94A3B8; font-size:0.8rem;" id="progress-city-text">City: Starting...</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:1rem;">
+              <span style="font-size:0.85rem; font-weight:700; color:#10B981;">
+                Discovered: <strong id="progress-leads-count" style="color:#fff;">0</strong> leads
+              </span>
+              <span style="font-family:var(--font-mono); font-weight:700; color:#06B6D4;" id="progress-pct-text">0%</span>
+            </div>
+          </div>
+          <div class="progress-track">
+            <div class="progress-fill" id="progress-fill-bar" style="width: 0%;"></div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- Step 2: Export Filters & Criteria Selection -->
+    <section class="card" style="border-color:var(--border-medium);">
+      <div class="card-body" style="padding:1.25rem 1.5rem;">
+        
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem; flex-wrap:wrap; gap:0.5rem;">
+          <div style="font-size:0.9rem; font-weight:700; color:#fff; display:flex; align-items:center; gap:0.4rem;">
+            <span>🎯 Filter & Export Criteria</span>
+            <span style="font-size:0.75rem; color:#94A3B8; font-weight:normal;">(Exports will only include leads matching these active filters)</span>
+          </div>
+          
+          <div style="display:flex; gap:0.5rem; align-items:center;">
+            <button class="btn btn-secondary btn-sm" id="btn-toggle-fields" onclick="window.LeadScraperApp.toggleFieldSelector()">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="4" y1="21" x2="4" y2="14"></line>
+                <line x1="4" y1="10" x2="4" y2="3"></line>
+                <line x1="12" y1="21" x2="12" y2="12"></line>
+                <line x1="12" y1="8" x2="12" y2="3"></line>
+                <line x1="20" y1="21" x2="20" y2="16"></line>
+                <line x1="20" y1="12" x2="20" y2="3"></line>
+              </svg>
+              <span>Customize Export Fields (<strong id="selected-fields-count" style="color:var(--primary);">8</strong>)</span>
+            </button>
+            <button class="btn btn-secondary btn-sm" onclick="window.LeadScraperApp.reloadLeads()" title="Fetch newest leads from server">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M23 4v6h-6"></path>
+                <path d="M1 20v-6h6"></path>
+                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+              </svg>
+              <span>Reload Leads</span>
+            </button>
+            <button class="btn btn-secondary btn-sm" onclick="window.LeadScraperApp.resetFilters()">
+              <span>Reset Filters</span>
+            </button>
+          </div>
+        </div>
+
+        <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:0.85rem; align-items:end;">
+          
+          <!-- Filter: Search Keyword -->
+          <div class="form-group">
+            <label class="form-label" for="filter-search">Keyword Search</label>
+            <div class="search-box-wrap" style="min-width:auto;">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="11" cy="11" r="8"></circle>
+                <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+              </svg>
+              <input type="text" id="filter-search" class="form-control" placeholder="Search business name...">
+            </div>
+          </div>
+
+          <!-- Filter: Industry -->
+          <div class="form-group">
+            <label class="form-label" for="filter-industry">Filter by Industry</label>
+            <input type="text" id="filter-industry" class="form-control" placeholder="e.g. Dental Clinics, Solar, All">
+          </div>
+
+          <!-- Filter: City -->
+          <div class="form-group">
+            <label class="form-label" for="filter-city">Filter by City</label>
+            <input type="text" id="filter-city" class="form-control" placeholder="e.g. London, Berlin, All">
+          </div>
+
+          <!-- Filter: Country -->
+          <div class="form-group">
+            <label class="form-label" for="filter-country">Filter by Country</label>
+            <input type="text" id="filter-country" class="form-control" placeholder="e.g. Germany, UK, USA, All">
+          </div>
+
+          <!-- Verified Only Toggle -->
+          <div class="form-group" style="justify-content:flex-end;">
+            <div class="verified-toggle-btn" id="toggle-verified" onclick="window.LeadScraperApp.toggleVerifiedOnly()" style="width:100%; justify-content:center;">
+              <span id="verified-toggle-checkbox">☑</span>
+              <span>Verified Leads Only</span>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Field Selection Panel (Collapsible) -->
+        <div class="field-selector-wrap" id="field-selector-panel" style="display:none; margin-top:1.25rem;">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <span style="font-size:0.75rem; font-weight:700; text-transform:uppercase; color:#94A3B8;">Choose which data fields to include in your CSV & Excel export:</span>
+            <button class="btn btn-secondary btn-sm" style="font-size:0.7rem; padding:0.2rem 0.5rem;" onclick="window.LeadScraperApp.selectAllFields()">Select All</button>
+          </div>
+          <div class="field-chips-grid" id="field-chips-container">
+            <!-- Dynamically rendered field chips -->
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- Step 3: Leads Results Table -->
+    <section class="table-container">
+      <table class="leads-table">
+        <thead>
+          <tr>
+            <th style="width:40px;">
+              <input type="checkbox" id="select-all-leads" style="accent-color:var(--primary); cursor:pointer;" onchange="window.LeadScraperApp.toggleSelectAll(this.checked)">
+            </th>
+            <th>Company Name</th>
+            <th>Verified Email</th>
+            <th>Phone</th>
+            <th>Website</th>
+            <th>Location / City</th>
+            <th style="text-align:right;">Quality Score</th>
+          </tr>
+        </thead>
+        <tbody id="leads-table-body">
+          <!-- Dynamically populated rows -->
+        </tbody>
+      </table>
+    </section>
+
+  </div>
+
+  <!-- Step 4: Floating Sticky Export Action Bar -->
+  <footer class="export-sticky-bar">
+    <div class="export-bar-content">
+      <div class="export-counter-label">
+        <span id="export-summary-text">Ready to export <strong>0</strong> verified leads</span>
+        <div id="export-filename-preview" style="font-size:0.75rem; color:var(--accent-cyan); font-family:var(--font-mono); margin-top:0.2rem;">
+          Target filename: leads_export.xlsx
         </div>
       </div>
 
-      <div id="dashboardBody">
+      <div class="export-buttons-group">
+        <button class="btn btn-excel" onclick="window.LeadScraperApp.exportData('excel')">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="7 10 12 15 17 10"></polyline>
+            <line x1="12" y1="15" x2="12" y2="3"></line>
+          </svg>
+          <span>Export Excel (.xlsx)</span>
+        </button>
 
-        <!-- ===================== TAB: SCRAPER ===================== -->
-        <div id="tab-scraper" class="tab-content active">
-          <section id="scraper">
-            <div class="section-heading">
-              <h2><i class="bi bi-sliders" style="color:var(--accent)"></i> Configuration</h2>
-            </div>
-
-            <div class="scraper-panel">
-              <div class="scraper-form" id="scraperForm">
-                <div class="scraper-field">
-                  <label for="scrapeBusinessType">Business Type</label>
-                  <input type="text" id="scrapeBusinessType" class="form-control" placeholder="e.g. gym, salon, restaurant" value="gym">
-                </div>
-                <div class="scraper-field">
-                  <label for="scrapeCountry">Country</label>
-                  <input type="text" id="scrapeCountry" class="form-control" placeholder="e.g. india, usa, uk" value="india">
-                </div>
-                <div class="scraper-field scraper-field-sm">
-                  <label for="scrapeMaxCities">Max Cities</label>
-                  <input type="number" id="scrapeMaxCities" class="form-control" min="1" max="200" value="30">
-                </div>
-                <div class="scraper-actions">
-                  <button class="btn btn-scrape-start" id="scrapeStartBtn">
-                    <i class="bi bi-play-fill"></i> Start Scraping
-                  </button>
-                  <button class="btn btn-scrape-stop d-none" id="scrapeStopBtn">
-                    <i class="bi bi-stop-fill"></i> Stop
-                  </button>
-                </div>
-              </div>
-
-              <!-- Progress area — hidden when idle -->
-              <div class="scraper-progress d-none" id="scraperProgress">
-                <div class="scraper-progress-header">
-                  <div class="scraper-status-badges">
-                    <span class="scraper-state-badge" id="scrapeStateBadge">Idle</span>
-                    <span class="scraper-elapsed" id="scrapeElapsed"></span>
-                  </div>
-                  <div class="scraper-stats">
-                    <div class="scraper-stat">
-                      <span class="scraper-stat-value" id="scrapeCitiesDone">0</span>
-                      <span class="scraper-stat-label">Cities Done</span>
-                    </div>
-                    <div class="scraper-stat">
-                      <span class="scraper-stat-value" id="scrapeLeadsFound">0</span>
-                      <span class="scraper-stat-label">Leads Found</span>
-                    </div>
-                    <div class="scraper-stat">
-                      <span class="scraper-stat-value" id="scrapeCurrentCity">—</span>
-                      <span class="scraper-stat-label">Current City</span>
-                    </div>
-                    <div class="scraper-stat">
-                      <span class="scraper-stat-value" id="scrapeBusinessProgress">—</span>
-                      <span class="scraper-stat-label">Business</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div class="scraper-bar-wrap">
-                  <div class="scraper-bar-track">
-                    <div class="scraper-bar-fill" id="scrapeProgressBar" style="width:0%"></div>
-                  </div>
-                  <span class="scraper-bar-pct" id="scrapeProgressPct">0%</span>
-                </div>
-
-                <div class="scraper-log" id="scrapeLog"></div>
-              </div>
-
-              <!-- Job History Section -->
-              <div class="history-section d-none" id="historySection">
-                <h3><i class="bi bi-clock-history"></i> Recent Runs</h3>
-                <div class="history-table-wrap">
-                  <table class="history-table">
-                    <thead>
-                      <tr>
-                        <th>Start Time</th>
-                        <th>Query</th>
-                        <th>Country</th>
-                        <th>Max Cities</th>
-                        <th>Leads Found</th>
-                        <th>Duration</th>
-                        <th>Status</th>
-                      </tr>
-                    </thead>
-                    <tbody id="historyTableBody">
-                      <!-- history rows injected by JS -->
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
-          </section>
-        </div>
-
-        <!-- ===================== TAB: DASHBOARD ===================== -->
-        <div id="tab-overview" class="tab-content">
-          <!-- Overview stats -->
-          <section id="overview">
-            <div class="stat-grid">
-              <div class="stat-card">
-                <div class="stat-icon stat-icon-total"><i class="bi bi-people-fill"></i></div>
-                <div class="stat-info">
-                  <span class="stat-label">Total Leads</span>
-                  <span class="stat-value" id="statTotal">—</span>
-                </div>
-              </div>
-              <div class="stat-card">
-                <div class="stat-icon stat-icon-hot"><i class="bi bi-fire"></i></div>
-                <div class="stat-info">
-                  <span class="stat-label">Hot Leads</span>
-                  <span class="stat-value" id="statHot">—</span>
-                </div>
-              </div>
-              <div class="stat-card">
-                <div class="stat-icon stat-icon-warm"><i class="bi bi-thermometer-half"></i></div>
-                <div class="stat-info">
-                  <span class="stat-label">Warm Leads</span>
-                  <span class="stat-value" id="statWarm">—</span>
-                </div>
-              </div>
-              <div class="stat-card">
-                <div class="stat-icon stat-icon-cold"><i class="bi bi-snow2"></i></div>
-                <div class="stat-info">
-                  <span class="stat-label">Cold Leads</span>
-                  <span class="stat-value" id="statCold">—</span>
-                </div>
-              </div>
-              <div class="stat-card">
-                <div class="stat-icon stat-icon-score"><i class="bi bi-graph-up-arrow"></i></div>
-                <div class="stat-info">
-                  <span class="stat-label">Avg Lead Score</span>
-                  <span class="stat-value" id="statAvgScore">—</span>
-                </div>
-              </div>
-              <div class="stat-card">
-                <div class="stat-icon stat-icon-complete"><i class="bi bi-check2-circle"></i></div>
-                <div class="stat-info">
-                  <span class="stat-label">Avg Completeness</span>
-                  <span class="stat-value" id="statAvgCompleteness">—</span>
-                </div>
-              </div>
-            </div>
-          </section>
-
-          <!-- Distribution charts -->
-          <section id="charts">
-            <div class="section-heading">
-              <h2>Lead Distribution</h2>
-            </div>
-            <div class="chart-grid">
-              <div class="chart-card">
-                <h3>Priority Distribution</h3>
-                <div class="chart-canvas-wrap"><canvas id="priorityChart"></canvas></div>
-              </div>
-              <div class="chart-card">
-                <h3>Lead Score Distribution</h3>
-                <div class="chart-canvas-wrap"><canvas id="scoreChart"></canvas></div>
-              </div>
-              <div class="chart-card">
-                <h3>Contact Completeness</h3>
-                <div class="chart-canvas-wrap"><canvas id="completenessChart"></canvas></div>
-              </div>
-            </div>
-          </section>
-        </div>
-
-        <!-- ===================== TAB: LEADS ===================== -->
-        <div id="tab-leads" class="tab-content">
-          <section id="leads">
-            <div class="section-heading">
-              <h2>All Leads</h2>
-              <div class="export-actions">
-                <button class="btn btn-outline-light btn-sm" id="exportCsvBtn"><i class="bi bi-filetype-csv"></i> Export CSV</button>
-                <button class="btn btn-outline-light btn-sm" id="exportExcelBtn"><i class="bi bi-file-earmark-excel"></i> Export Excel</button>
-              </div>
-            </div>
-
-            <div class="table-card">
-              <div class="table-controls">
-                <div class="controls-row primary-controls">
-                  <div class="search-box">
-                    <i class="bi bi-search"></i>
-                    <input type="text" id="searchInput" placeholder="Search business, phone, email, website, city...">
-                  </div>
-
-                  <div class="filter-group">
-                    <select id="priorityFilter" class="form-select form-select-sm">
-                      <option value="all">All Priorities</option>
-                      <option value="Hot">Hot</option>
-                      <option value="Warm">Warm</option>
-                      <option value="Cold">Cold</option>
-                    </select>
-
-                    <select id="scoreFilter" class="form-select form-select-sm">
-                      <option value="">All Scores</option>
-                      <option value="81-100">81 – 100</option>
-                      <option value="61-80">61 – 80</option>
-                      <option value="41-60">41 – 60</option>
-                      <option value="21-40">21 – 40</option>
-                      <option value="0-20">0 – 20</option>
-                    </select>
-
-                    <select id="pageSizeSelect" class="form-select form-select-sm">
-                      <option value="10">10 / page</option>
-                      <option value="25" selected>25 / page</option>
-                      <option value="50">50 / page</option>
-                      <option value="100">100 / page</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div class="controls-row advanced-controls">
-                  <div class="filter-item">
-                    <label for="spinFilter">Spin</label>
-                    <select id="spinFilter" class="form-select form-select-sm">
-                      <option value="all">All Historical Runs</option>
-                    </select>
-                  </div>
-
-                  <div class="filter-item">
-                    <label for="startDateFilter">From</label>
-                    <input type="date" id="startDateFilter" class="form-control form-control-sm">
-                  </div>
-
-                  <div class="filter-item">
-                    <label for="endDateFilter">To</label>
-                    <input type="date" id="endDateFilter" class="form-control form-control-sm">
-                  </div>
-
-                  <div class="leads-count-badge">
-                    <span id="filteredLeadsCount">0</span> leads matching
-                  </div>
-                </div>
-              </div>
-
-              <div class="table-responsive">
-                <table class="table lead-table" id="leadTable">
-                  <thead>
-                    <tr>
-                      <th data-sort="business_name">Business Name <i class="bi bi-arrow-down-up"></i></th>
-                      <th data-sort="phone">Phone</th>
-                      <th data-sort="email">Email</th>
-                      <th>Website</th>
-                      <th>Instagram</th>
-                      <th>Facebook</th>
-                      <th>LinkedIn</th>
-                      <th data-sort="lead_score">Score <i class="bi bi-arrow-down-up"></i></th>
-                      <th data-sort="priority">Priority <i class="bi bi-arrow-down-up"></i></th>
-                      <th data-sort="contact_completeness">Completeness <i class="bi bi-arrow-down-up"></i></th>
-                    </tr>
-                  </thead>
-                  <tbody id="leadTableBody">
-                    <!-- rows injected by dashboard.js -->
-                  </tbody>
-                </table>
-              </div>
-
-              <div class="table-footer">
-                <span id="tableSummary">Showing 0 of 0 leads</span>
-                <nav>
-                  <ul class="pagination pagination-sm mb-0" id="pagination"></ul>
-                </nav>
-              </div>
-            </div>
-          </section>
-        </div>
-
-      </div> <!-- /dashboardBody -->
-    </main>
-  </div>
-</div>
-
-<!-- ===================== LEAD DETAILS DRAWER ===================== -->
-<div class="details-drawer" id="detailsDrawer">
-  <div class="drawer-header">
-    <h5 id="drawerBusinessName">Lead Details</h5>
-    <button type="button" class="drawer-close-btn" id="drawerCloseBtn"><i class="bi bi-x-lg"></i></button>
-  </div>
-  <div class="drawer-body">
-    <div class="lead-detail-badges">
-      <span class="badge-priority" id="drawerPriority">—</span>
-      <span class="badge-score" id="drawerScore">Score: —</span>
+        <button class="btn btn-csv" onclick="window.LeadScraperApp.exportData('csv')">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="7 10 12 15 17 10"></polyline>
+            <line x1="12" y1="15" x2="12" y2="3"></line>
+          </svg>
+          <span>Export CSV (.csv)</span>
+        </button>
+      </div>
     </div>
-    <dl class="lead-detail-list">
-      <dt><i class="bi bi-envelope"></i> Email</dt>
-      <dd id="drawerEmail">—</dd>
-      <dt><i class="bi bi-telephone"></i> Phone</dt>
-      <dd id="drawerPhone">—</dd>
-      <dt><i class="bi bi-globe"></i> Website</dt>
-      <dd id="drawerWebsite">—</dd>
-      <dt><i class="bi bi-instagram"></i> Instagram</dt>
-      <dd id="drawerInstagram">—</dd>
-      <dt><i class="bi bi-facebook"></i> Facebook</dt>
-      <dd id="drawerFacebook">—</dd>
-      <dt><i class="bi bi-linkedin"></i> LinkedIn</dt>
-      <dd id="drawerLinkedin">—</dd>
-    </dl>
-  </div>
-</div>
+  </footer>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-<script src="/static/js/dashboard.js"></script>
+  <!-- Toast Notification Container -->
+  <div id="toast-container"></div>
+
+  <script src="/static/js/dashboard.js"></script>
 </body>
 </html>

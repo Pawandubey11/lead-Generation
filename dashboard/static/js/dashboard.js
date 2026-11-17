@@ -1,828 +1,610 @@
-/* =============================================================
-   dashboard.js
-   Vanilla JS controller for the Lead Generation Dashboard.
-   Talks to: /api/stats, /api/charts, /api/leads, /api/export/*,
-             and Scraper API endpoints.
-   ============================================================= */
+/**
+ * LeadPulse Scraper & Verified Exporter - Client Engine
+ * Streamlined Single-Page Architecture for Fast B2B Prospecting & Filtered Export
+ */
 
-(() => {
-  "use strict";
+(function () {
+  'use strict';
 
-  const REFRESH_INTERVAL_MS = 30000;
-  const SCRAPE_POLL_MS = 2000;
+  // --- Available Exportable Data Fields ---
+  const ALL_FIELDS = [
+    { key: 'business_name', label: 'Company Name', default: true },
+    { key: 'email', label: 'Verified Email', default: true },
+    { key: 'phone', label: 'Phone Number', default: true },
+    { key: 'website', label: 'Website', default: true },
+    { key: 'city', label: 'City', default: true },
+    { key: 'address', label: 'Street Address', default: true },
+    { key: 'lead_score', label: 'Quality Score (0-100)', default: true },
+    { key: 'priority', label: 'Priority (Hot/Warm/Cold)', default: true },
+    { key: 'linkedin', label: 'LinkedIn URL', default: false },
+    { key: 'instagram', label: 'Instagram Handle', default: false },
+    { key: 'facebook', label: 'Facebook Page', default: false },
+  ];
 
+  // --- State ---
   const state = {
-    search: "",
-    priority: "all",
-    scoreRange: "",      // "min-max" string from the dropdown
-    sortBy: "lead_score",
-    sortOrder: "desc",
-    page: 1,
-    pageSize: 25,
-    leadsById: new Map(), // cache of currently-loaded rows, for modal/drawer lookups
-    selectedLeadId: null, // tracked for slide-out drawer highlighting
-    spin: "all",
-    startDate: "",
-    endDate: "",
+    leads: [],
+    filteredLeads: [],
+    search: '',
+    industry: '',
+    city: '',
+    country: '',
+    verifiedOnly: true,
+    selectedLeadIds: new Set(),
+    selectedFields: new Set(ALL_FIELDS.filter(f => f.default).map(f => f.key)),
+    scraper: {
+      pollingInterval: null,
+      isRunning: false,
+    }
   };
 
-  let scrapeState = {
-    polling: false,
-    pollTimer: null,
-    lastState: "idle",
-  };
+  // --- Helpers ---
+  function $(id) {
+    return document.getElementById(id);
+  }
 
-  let charts = { priority: null, score: null, completeness: null };
-  let searchDebounceTimer = null;
+  function showToast(msg, isSuccess = true) {
+    const container = $('toast-container');
+    if (!container) return;
+    const toast = document.createElement('div');
+    toast.className = 'toast';
+    toast.style.borderLeftColor = isSuccess ? '#10B981' : '#EF4444';
+    toast.textContent = msg;
+    container.appendChild(toast);
 
-  // -----------------------------------------------------------
-  // DOM refs
-  // -----------------------------------------------------------
-  const el = (id) => document.getElementById(id);
-
-  const refs = {
-    noDataBanner: el("noDataBanner"),
-    dashboardBody: el("dashboardBody"),
-    syncDot: el("syncDot"),
-    syncText: el("syncText"),
-    lastUpdated: el("lastUpdated"),
-
-    statTotal: el("statTotal"),
-    statHot: el("statHot"),
-    statWarm: el("statWarm"),
-    statCold: el("statCold"),
-    statAvgScore: el("statAvgScore"),
-    statAvgCompleteness: el("statAvgCompleteness"),
-
-    searchInput: el("searchInput"),
-    priorityFilter: el("priorityFilter"),
-    scoreFilter: el("scoreFilter"),
-    pageSizeSelect: el("pageSizeSelect"),
-    spinFilter: el("spinFilter"),
-    startDateFilter: el("startDateFilter"),
-    endDateFilter: el("endDateFilter"),
-    filteredLeadsCount: el("filteredLeadsCount"),
-
-    leadTableBody: el("leadTableBody"),
-    tableSummary: el("tableSummary"),
-    pagination: el("pagination"),
-
-    refreshBtn: el("refreshBtn"),
-    exportCsvBtn: el("exportCsvBtn"),
-    exportExcelBtn: el("exportExcelBtn"),
-
-    sidebar: el("sidebar"),
-    sidebarToggle: el("sidebarToggle"),
-
-    // Scraper elements
-    scrapeBusinessType: el("scrapeBusinessType"),
-    scrapeCountry: el("scrapeCountry"),
-    scrapeMaxCities: el("scrapeMaxCities"),
-    scrapeStartBtn: el("scrapeStartBtn"),
-    scrapeStopBtn: el("scrapeStopBtn"),
-    scraperProgress: el("scraperProgress"),
-    scrapeStateBadge: el("scrapeStateBadge"),
-    scrapeElapsed: el("scrapeElapsed"),
-    scrapeCitiesDone: el("scrapeCitiesDone"),
-    scrapeLeadsFound: el("scrapeLeadsFound"),
-    scrapeCurrentCity: el("scrapeCurrentCity"),
-    scrapeBusinessProgress: el("scrapeBusinessProgress"),
-    scrapeProgressBar: el("scrapeProgressBar"),
-    scrapeProgressPct: el("scrapeProgressPct"),
-    scrapeLog: el("scrapeLog"),
-
-    // New premium visual layout elements
-    globalScraperBadge: el("globalScraperBadge"),
-    topbarTitle: el("topbarTitle"),
-    topbarSubtitle: el("topbarSubtitle"),
-    historySection: el("historySection"),
-    historyTableBody: el("historyTableBody"),
-
-    // Details Drawer elements
-    detailsDrawer: el("detailsDrawer"),
-    drawerCloseBtn: el("drawerCloseBtn"),
-    drawerBusinessName: el("drawerBusinessName"),
-    drawerPriority: el("drawerPriority"),
-    drawerScore: el("drawerScore"),
-    drawerEmail: el("drawerEmail"),
-    drawerPhone: el("drawerPhone"),
-    drawerWebsite: el("drawerWebsite"),
-    drawerInstagram: el("drawerInstagram"),
-    drawerFacebook: el("drawerFacebook"),
-    drawerLinkedin: el("drawerLinkedin"),
-  };
-
-  // -----------------------------------------------------------
-  // Helpers
-  // -----------------------------------------------------------
+    setTimeout(() => {
+      toast.style.opacity = '0';
+      toast.style.transform = 'translateY(-10px)';
+      toast.style.transition = 'all 0.3s ease';
+      setTimeout(() => toast.remove(), 300);
+    }, 3500);
+  }
 
   function escapeHtml(str) {
-    if (str === null || str === undefined) return "";
+    if (!str) return '';
     return String(str)
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;");
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
   }
 
-  function safeUrl(value) {
-    if (!value) return null;
-    const v = String(value).trim();
-    if (!v) return null;
-    if (/^https?:\/\//i.test(v)) return v;
-    return "https://" + v;
+  // --- Initialization ---
+  async function init() {
+    renderFieldChips();
+    bindEvents();
+    await loadInitialLeads();
+    checkScraperStatus();
   }
 
-  function linkOrDash(value, icon) {
-    const url = safeUrl(value);
-    if (!url) return '<span class="link-dash">—</span>';
-    return `<a class="link-icon" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" title="${escapeHtml(value)}"><i class="bi ${icon}"></i></a>`;
+  function renderFieldChips() {
+    const container = $('field-chips-container');
+    container.innerHTML = '';
+    ALL_FIELDS.forEach(field => {
+      const chip = document.createElement('div');
+      const isSelected = state.selectedFields.has(field.key);
+      chip.className = `field-chip ${isSelected ? 'selected' : ''}`;
+      chip.innerHTML = `
+        <span>${isSelected ? '✓' : '+'}</span>
+        <span>${field.label}</span>
+      `;
+      chip.addEventListener('click', () => toggleField(field.key, chip));
+      container.appendChild(chip);
+    });
+    $('selected-fields-count').textContent = state.selectedFields.size;
   }
 
-  async function fetchJson(url) {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`Request failed: ${res.status}`);
-    return res.json();
+  function toggleField(key, chipElement) {
+    if (state.selectedFields.has(key)) {
+      if (state.selectedFields.size <= 1) {
+        showToast('At least one data field must remain selected.', false);
+        return;
+      }
+      state.selectedFields.delete(key);
+      chipElement.classList.remove('selected');
+      chipElement.querySelector('span').textContent = '+';
+    } else {
+      state.selectedFields.add(key);
+      chipElement.classList.add('selected');
+      chipElement.querySelector('span').textContent = '✓';
+    }
+    $('selected-fields-count').textContent = state.selectedFields.size;
   }
 
-  function buildLeadsQuery(extra = {}) {
-    const params = new URLSearchParams();
-    if (state.search) params.set("search", state.search);
-    if (state.priority && state.priority !== "all") params.set("priority", state.priority);
+  function selectAllFields() {
+    ALL_FIELDS.forEach(f => state.selectedFields.add(f.key));
+    renderFieldChips();
+    showToast('All data fields selected for export.');
+  }
 
-    if (state.scoreRange) {
-      const [min, max] = state.scoreRange.split("-");
-      params.set("min_score", min);
-      params.set("max_score", max);
+  function bindEvents() {
+    // Search keyword input
+    $('filter-search').addEventListener('input', (e) => {
+      state.search = e.target.value.trim().toLowerCase();
+      applyLocalFilter();
+    });
+
+    // Industry filter input
+    $('filter-industry').addEventListener('input', (e) => {
+      state.industry = e.target.value.trim();
+      applyLocalFilter();
+    });
+
+    // City filter input
+    $('filter-city').addEventListener('input', (e) => {
+      state.city = e.target.value.trim();
+      applyLocalFilter();
+    });
+
+    // Country filter input
+    $('filter-country').addEventListener('input', (e) => {
+      state.country = e.target.value.trim();
+      applyLocalFilter();
+    });
+  }
+
+  // --- Data Loading ---
+  async function loadInitialLeads() {
+    try {
+      const res = await fetch('/api/leads?page=1&page_size=2000');
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      state.leads = data.data || data.leads || [];
+      
+      applyLocalFilter();
+    } catch (err) {
+      console.error('Error loading leads:', err);
+      showToast('Error fetching leads dataset.', false);
+    }
+  }
+
+  // --- Local Filtering & Verification Check ---
+  function isLeadVerified(lead) {
+    if (!lead) return false;
+    const email = String(lead.email || '').trim();
+    const hasValidEmail = email.includes('@') && email.includes('.') && !email.toLowerCase().includes('example') && !email.toLowerCase().includes('domain');
+    const completeness = Number(lead.contact_completeness) || 0;
+    const hasPhone = Boolean(lead.phone && String(lead.phone).trim());
+    return hasValidEmail || (completeness >= 40 && hasPhone);
+  }
+
+  function applyLocalFilter() {
+    state.filteredLeads = state.leads.filter(lead => {
+      // 1. Verification check
+      if (state.verifiedOnly && !isLeadVerified(lead)) {
+        return false;
+      }
+
+      // 2. Search keyword filter
+      if (state.search) {
+        const q = state.search;
+        const name = (lead.business_name || '').toLowerCase();
+        const email = (lead.email || '').toLowerCase();
+        const city = (lead.city || '').toLowerCase();
+        const phone = (lead.phone || '').toLowerCase();
+        const spin = (lead.spin || '').toLowerCase();
+        
+        let match = name.includes(q) || email.includes(q) || city.includes(q) || phone.includes(q) || spin.includes(q);
+        if (!match && (q === 'b2b' || q === 'b2b software' || q === 'b2b companies')) {
+          const b2bTerms = ['software', 'it', 'saas', 'cloud', 'web', 'agency', 'consulting', 'cyber', 'analytics', 'erp', 'wholesale', 'b2b', 'distributor', 'manufacturing', 'logistics', 'unternehmen'];
+          match = b2bTerms.some(term => spin.includes(term) || name.includes(term));
+        }
+        if (!match) {
+          return false;
+        }
+      }
+
+      // 3. Industry filter
+      if (state.industry && state.industry.toLowerCase() !== 'all') {
+        const ind = state.industry.toLowerCase();
+        const spin = (lead.spin || '').toLowerCase();
+        const name = (lead.business_name || '').toLowerCase();
+        
+        let match = false;
+        if (ind === 'b2b' || ind === 'b2b software' || ind === 'b2b companies') {
+          const b2bTerms = ['software', 'it', 'saas', 'cloud', 'web', 'agency', 'consulting', 'cyber', 'analytics', 'erp', 'wholesale', 'b2b', 'distributor', 'manufacturing', 'logistics', 'unternehmen'];
+          match = b2bTerms.some(term => spin.includes(term) || name.includes(term));
+        } else {
+          match = spin.includes(ind) || name.includes(ind);
+        }
+        if (!match) {
+          return false;
+        }
+      }
+
+      // 4. City filter
+      if (state.city && state.city.toLowerCase() !== 'all') {
+        const c = state.city.toLowerCase();
+        const leadCity = (lead.city || '').toLowerCase();
+        const addr = (lead.address || '').toLowerCase();
+        if (!leadCity.includes(c) && !addr.includes(c)) {
+          return false;
+        }
+      }
+
+      // 5. Country filter
+      if (state.country && state.country.toLowerCase() !== 'all') {
+        const cntry = state.country.toLowerCase();
+        const spin = (lead.spin || '').toLowerCase();
+        const addr = (lead.address || '').toLowerCase();
+        const city = (lead.city || '').toLowerCase();
+        if (!spin.includes(cntry) && !addr.includes(cntry) && !city.includes(cntry)) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+
+    // Auto select all currently matching
+    state.selectedLeadIds = new Set(state.filteredLeads.map((_, idx) => idx));
+
+    renderTable();
+    updateExportSummary();
+    updateFilenamePreview();
+  }
+
+  function renderTable() {
+    const tbody = $('leads-table-body');
+    tbody.innerHTML = '';
+
+    if (state.filteredLeads.length === 0) {
+      tbody.innerHTML = `
+        <tr>
+          <td colspan="7" style="text-align:center; padding:3.5rem 1rem; color:#64748B;">
+            <div style="font-size:1.15rem; font-weight:700; color:#CBD5E1; margin-bottom:0.4rem;">No leads matching active filters</div>
+            <div>Try adjusting your Industry, City, or Country filters above, or launch a new scrape job.</div>
+          </td>
+        </tr>
+      `;
+      return;
     }
 
-    if (state.spin && state.spin !== "all") params.set("spin", state.spin);
-    if (state.startDate) params.set("start_date", state.startDate);
-    if (state.endDate) params.set("end_date", state.endDate);
+    state.filteredLeads.forEach((lead, idx) => {
+      const isChecked = state.selectedLeadIds.has(idx);
+      const isVerified = isLeadVerified(lead);
+      const score = Math.round(Number(lead.lead_score) || 0);
 
-    params.set("sort_by", state.sortBy);
-    params.set("sort_order", state.sortOrder);
+      let scoreClass = 'low';
+      if (score >= 70) scoreClass = 'high';
+      else if (score >= 40) scoreClass = 'mid';
 
-    Object.entries(extra).forEach(([k, v]) => params.set(k, v));
-    return params.toString();
-  }
-
-  function setSyncStatus(ok) {
-    refs.syncDot.style.background = ok ? "#10b981" : "#ef4444";
-    refs.syncDot.style.boxShadow = ok ? "0 0 10px rgba(16, 185, 129, 0.4)" : "0 0 10px rgba(239, 68, 68, 0.4)";
-    refs.syncText.textContent = ok ? "Live · refreshes every 30s" : "Connection issue";
-    refs.lastUpdated.textContent = "Updated " + new Date().toLocaleTimeString();
-  }
-
-  // -----------------------------------------------------------
-  // Stats
-  // -----------------------------------------------------------
-
-  async function loadStats() {
-    const data = await fetchJson("/api/stats");
-    toggleNoData(!data.has_data);
-
-    refs.statTotal.textContent = data.total_leads.toLocaleString();
-    refs.statHot.textContent = data.hot_leads.toLocaleString();
-    refs.statWarm.textContent = data.warm_leads.toLocaleString();
-    refs.statCold.textContent = data.cold_leads.toLocaleString();
-    refs.statAvgScore.textContent = data.has_data ? Math.round(data.avg_score) : "—";
-    refs.statAvgCompleteness.textContent = data.has_data ? `${Math.round(data.avg_completeness)}%` : "—";
-
-    return data;
-  }
-
-  function toggleNoData(show) {
-    refs.noDataBanner.classList.toggle("d-none", !show);
-    refs.dashboardBody.style.opacity = show ? "0.45" : "1";
-    refs.dashboardBody.style.pointerEvents = show ? "none" : "auto";
-  }
-
-  // -----------------------------------------------------------
-  // Charts
-  // -----------------------------------------------------------
-
-  function destroyChart(key) {
-    if (charts[key]) {
-      charts[key].destroy();
-      charts[key] = null;
-    }
-  }
-
-  async function loadCharts() {
-    const data = await fetchJson("/api/charts");
-
-    const priorityCtx = el("priorityChart").getContext("2d");
-    const scoreCtx = el("scoreChart").getContext("2d");
-    const completenessCtx = el("completenessChart").getContext("2d");
-
-    destroyChart("priority");
-    destroyChart("score");
-    destroyChart("completeness");
-
-    charts.priority = new Chart(priorityCtx, {
-      type: "pie",
-      data: {
-        labels: ["Hot", "Warm", "Cold"],
-        datasets: [{
-          data: [
-            data.priority_distribution.Hot,
-            data.priority_distribution.Warm,
-            data.priority_distribution.Cold,
-          ],
-          backgroundColor: ["#f43f5e", "#fbbf24", "#38bdf8"],
-          borderWidth: 0,
-        }],
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {
-          legend: {
-            position: "bottom",
-            labels: { boxWidth: 10, color: "#94a3b8", font: { size: 11 } }
-          }
-        },
-      },
-    });
-
-    const scoreLabels = Object.keys(data.score_distribution);
-    charts.score = new Chart(scoreCtx, {
-      type: "bar",
-      data: {
-        labels: scoreLabels,
-        datasets: [{
-          label: "Leads",
-          data: scoreLabels.map((l) => data.score_distribution[l]),
-          backgroundColor: "#6366f1",
-          borderRadius: 6,
-          maxBarThickness: 36,
-        }],
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: { legend: { display: false } },
-        scales: {
-          y: {
-            beginAtZero: true,
-            ticks: { precision: 0, color: "#64748b" },
-            grid: { color: "rgba(255, 255, 255, 0.04)" }
-          },
-          x: {
-            ticks: { color: "#64748b" },
-            grid: { display: false }
-          },
-        },
-      },
-    });
-
-    const completenessLabels = Object.keys(data.completeness_distribution);
-    charts.completeness = new Chart(completenessCtx, {
-      type: "bar",
-      data: {
-        labels: completenessLabels,
-        datasets: [{
-          label: "Leads",
-          data: completenessLabels.map((l) => data.completeness_distribution[l]),
-          backgroundColor: "#10b981",
-          borderRadius: 6,
-          maxBarThickness: 36,
-        }],
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: { legend: { display: false } },
-        scales: {
-          y: {
-            beginAtZero: true,
-            ticks: { precision: 0, color: "#64748b" },
-            grid: { color: "rgba(255, 255, 255, 0.04)" }
-          },
-          x: {
-            ticks: { color: "#64748b" },
-            grid: { display: false }
-          },
-        },
-      },
-    });
-  }
-
-  // -----------------------------------------------------------
-  // Table
-  // -----------------------------------------------------------
-
-  function renderRow(lead) {
-    const completeness = Math.round(lead.contact_completeness);
-    const isSelected = String(lead.id) === state.selectedLeadId ? "row-selected" : "";
-    return `
-      <tr data-id="${lead.id}" class="${isSelected}">
-        <td class="biz-name">${escapeHtml(lead.business_name) || "—"}</td>
-        <td>${escapeHtml(lead.phone) || "—"}</td>
-        <td>${escapeHtml(lead.email) || "—"}</td>
-        <td>${linkOrDash(lead.website, "bi-globe")}</td>
-        <td>${linkOrDash(lead.instagram, "bi-instagram")}</td>
-        <td>${linkOrDash(lead.facebook, "bi-facebook")}</td>
-        <td>${linkOrDash(lead.linkedin, "bi-linkedin")}</td>
-        <td><span class="score-pill">${Math.round(lead.lead_score)}</span></td>
-        <td><span class="badge-priority ${escapeHtml(lead.priority)}">${escapeHtml(lead.priority)}</span></td>
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
         <td>
-          <div class="completeness-bar-wrap">
-            <div class="completeness-bar-track"><div class="completeness-bar-fill" style="width:${completeness}%"></div></div>
-            <span class="completeness-text">${completeness}%</span>
+          <input type="checkbox" style="accent-color:var(--primary); cursor:pointer;" ${isChecked ? 'checked' : ''} onchange="window.LeadScraperApp.toggleLeadSelect(${idx}, this.checked)">
+        </td>
+        <td>
+          <div class="biz-name-block">
+            <span class="biz-name-text">
+              ${escapeHtml(lead.business_name || 'Business')}
+              ${isVerified ? '<span class="verified-icon" title="Validated & Verified Lead">✓</span>' : ''}
+            </span>
+            <span class="biz-sub-text">${escapeHtml(lead.spin || lead.address || '')}</span>
           </div>
         </td>
-      </tr>`;
+        <td>
+          ${lead.email ? `
+            <div class="email-copy-pill" onclick="window.LeadScraperApp.copyText('${escapeHtml(lead.email)}', 'Email copied!')" title="Click to copy">
+              <span>✉</span>
+              <span>${escapeHtml(lead.email)}</span>
+            </div>
+          ` : '<span style="color:#64748B;">—</span>'}
+        </td>
+        <td>
+          <span style="font-family:var(--font-mono); font-size:0.8rem; color:#E2E8F0;">
+            ${escapeHtml(lead.phone || '—')}
+          </span>
+        </td>
+        <td>
+          ${lead.website ? `
+            <a href="${escapeHtml(lead.website)}" target="_blank" rel="noopener" style="font-size:0.8rem;">
+              Visit Website ↗
+            </a>
+          ` : '<span style="color:#64748B;">—</span>'}
+        </td>
+        <td>
+          <span style="font-size:0.85rem; color:#CBD5E1;">${escapeHtml(lead.city || '—')}</span>
+        </td>
+        <td style="text-align:right;">
+          <span class="score-badge ${scoreClass}">${score}</span>
+        </td>
+      `;
+
+      tbody.appendChild(tr);
+    });
+
+    $('header-total-leads').textContent = state.filteredLeads.length.toLocaleString();
   }
 
-  function renderPagination(page, totalPages) {
-    refs.pagination.innerHTML = "";
-    if (totalPages <= 1) return;
-
-    const addItem = (label, targetPage, opts = {}) => {
-      const li = document.createElement("li");
-      li.className = `page-item ${opts.disabled ? "disabled" : ""} ${opts.active ? "active" : ""}`;
-      const a = document.createElement("a");
-      a.className = "page-link";
-      a.href = "#";
-      a.textContent = label;
-      a.addEventListener("click", (e) => {
-        e.preventDefault();
-        if (opts.disabled || opts.active) return;
-        state.page = targetPage;
-        loadLeads();
-      });
-      li.appendChild(a);
-      refs.pagination.appendChild(li);
-    };
-
-    addItem("‹", page - 1, { disabled: page <= 1 });
-
-    const windowSize = 5;
-    let start = Math.max(1, page - Math.floor(windowSize / 2));
-    let end = Math.min(totalPages, start + windowSize - 1);
-    start = Math.max(1, end - windowSize + 1);
-
-    for (let p = start; p <= end; p++) {
-      addItem(String(p), p, { active: p === page });
-    }
-
-    addItem("›", page + 1, { disabled: page >= totalPages });
+  function updateExportSummary() {
+    const count = state.selectedLeadIds.size;
+    const total = state.filteredLeads.length;
+    $('export-summary-text').innerHTML = `Ready to export <strong>${count}</strong> of <strong>${total}</strong> filtered leads`;
+    $('select-all-leads').checked = count === total && total > 0;
   }
 
-  async function loadLeads() {
-    const query = buildLeadsQuery({ page: state.page, page_size: state.pageSize });
-    const data = await fetchJson(`/api/leads?${query}`);
+  function getCalculatedFilename(extension = 'xlsx') {
+    let ind = state.industry.trim();
+    let loc = state.city.trim() || state.country.trim();
 
-    state.leadsById = new Map(data.data.map((l) => [String(l.id), l]));
-
-    if (data.data.length === 0) {
-      refs.leadTableBody.innerHTML = `<tr class="empty-row"><td colspan="10">No matching leads found.</td></tr>`;
-    } else {
-      refs.leadTableBody.innerHTML = data.data.map(renderRow).join("");
-    }
-
-    const startIdx = data.total === 0 ? 0 : (data.page - 1) * data.page_size + 1;
-    const endIdx = Math.min(data.page * data.page_size, data.total);
-    refs.tableSummary.textContent = `Showing ${startIdx}-${endIdx} of ${data.total} leads`;
-
-    if (refs.filteredLeadsCount) {
-      refs.filteredLeadsCount.textContent = data.total.toLocaleString();
-    }
-
-    renderPagination(data.page, data.total_pages);
-    updateSortHeaderUI();
-
-    return data;
-  }
-
-  function updateSortHeaderUI() {
-    document.querySelectorAll("th[data-sort]").forEach((th) => {
-      const isActive = th.dataset.sort === state.sortBy;
-      th.classList.toggle("sort-active", isActive);
-      const icon = th.querySelector("i");
-      if (icon) {
-        icon.className = isActive
-          ? (state.sortOrder === "asc" ? "bi bi-arrow-up" : "bi bi-arrow-down")
-          : "bi bi-arrow-down-up";
+    if (!ind && state.filteredLeads.length > 0) {
+      const firstSpin = state.filteredLeads[0].spin || '';
+      if (firstSpin && firstSpin.includes(' in ')) {
+        const parts = firstSpin.split(' in ');
+        ind = parts[0].trim();
+        if (!loc) loc = parts[1].trim();
+      } else if (firstSpin) {
+        ind = firstSpin.trim();
       }
-    });
-  }
-
-  // -----------------------------------------------------------
-  // Slide-out Drawer details
-  // -----------------------------------------------------------
-
-  function openLeadModal(lead) {
-    state.selectedLeadId = String(lead.id);
-
-    // Update row highlighting
-    document.querySelectorAll("#leadTable tbody tr").forEach((tr) => {
-      tr.classList.toggle("row-selected", tr.dataset.id === state.selectedLeadId);
-    });
-
-    refs.drawerBusinessName.textContent = lead.business_name || "Lead Details";
-    const priorityBadge = refs.drawerPriority;
-    priorityBadge.textContent = lead.priority || "—";
-    priorityBadge.className = `badge-priority ${lead.priority || ""}`;
-    refs.drawerScore.textContent = `Score: ${Math.round(lead.lead_score)}`;
-
-    refs.drawerEmail.textContent = lead.email || "—";
-    refs.drawerPhone.textContent = lead.phone || "—";
-
-    const setLink = (id, value) => {
-      const url = safeUrl(value);
-      el(id).innerHTML = url
-        ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(value)}</a>`
-        : "—";
-    };
-    setLink("drawerWebsite", lead.website);
-    setLink("drawerInstagram", lead.instagram);
-    setLink("drawerFacebook", lead.facebook);
-    setLink("drawerLinkedin", lead.linkedin);
-
-    // Slide in the drawer
-    refs.detailsDrawer.classList.add("open");
-  }
-
-  function closeLeadDrawer() {
-    state.selectedLeadId = null;
-    document.querySelectorAll("#leadTable tbody tr").forEach((tr) => {
-      tr.classList.remove("row-selected");
-    });
-    refs.detailsDrawer.classList.remove("open");
-  }
-
-  // -----------------------------------------------------------
-  // Tab Management
-  // -----------------------------------------------------------
-
-  function switchTab(tabName) {
-    document.querySelectorAll(".nav-link[data-tab]").forEach((link) => {
-      link.classList.toggle("active", link.dataset.tab === tabName);
-    });
-
-    document.querySelectorAll(".tab-content").forEach((section) => {
-      section.classList.toggle("active", section.id === `tab-${tabName}`);
-    });
-
-    // Update title/subtitle based on tab
-    if (tabName === "scraper") {
-      refs.topbarTitle.textContent = "Scraper Control";
-      refs.topbarSubtitle.textContent = "Configure and run background scrape jobs.";
-    } else if (tabName === "overview") {
-      refs.topbarTitle.textContent = "Dashboard Overview";
-      refs.topbarSubtitle.textContent = "Overall qualification statistics and metrics.";
-    } else if (tabName === "leads") {
-      refs.topbarTitle.textContent = "Leads Database";
-      refs.topbarSubtitle.textContent = "Browse, filter, and export qualified leads.";
     }
 
-    // Close details drawer when switching tabs to avoid stray UI
-    closeLeadDrawer();
+    let parts = [];
+    if (ind) parts.push(ind.replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '_'));
+    if (loc) parts.push(loc.replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '_'));
+    if (parts.length === 0 && state.search) {
+      parts.push(state.search.replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '_'));
+    }
+
+    if (parts.length === 0) {
+      return `verified_leads_export.${extension}`;
+    }
+
+    return `${parts.join('_')}_leads.${extension}`;
   }
 
-  // -----------------------------------------------------------
-  // Event wiring
-  // -----------------------------------------------------------
-
-  function wireEvents() {
-    refs.searchInput.addEventListener("input", (e) => {
-      clearTimeout(searchDebounceTimer);
-      searchDebounceTimer = setTimeout(() => {
-        state.search = e.target.value;
-        state.page = 1;
-        loadLeads();
-      }, 300);
-    });
-
-    refs.priorityFilter.addEventListener("change", (e) => {
-      state.priority = e.target.value;
-      state.page = 1;
-      loadLeads();
-    });
-
-    refs.scoreFilter.addEventListener("change", (e) => {
-      state.scoreRange = e.target.value;
-      state.page = 1;
-      loadLeads();
-    });
-
-    refs.pageSizeSelect.addEventListener("change", (e) => {
-      state.pageSize = parseInt(e.target.value, 10);
-      state.page = 1;
-      loadLeads();
-    });
-
-    refs.spinFilter.addEventListener("change", (e) => {
-      state.spin = e.target.value;
-      state.page = 1;
-      loadLeads();
-    });
-
-    refs.startDateFilter.addEventListener("change", (e) => {
-      state.startDate = e.target.value;
-      state.page = 1;
-      loadLeads();
-    });
-
-    refs.endDateFilter.addEventListener("change", (e) => {
-      state.endDate = e.target.value;
-      state.page = 1;
-      loadLeads();
-    });
-
-    document.querySelectorAll("th[data-sort]").forEach((th) => {
-      th.addEventListener("click", () => {
-        const col = th.dataset.sort;
-        if (state.sortBy === col) {
-          state.sortOrder = state.sortOrder === "asc" ? "desc" : "asc";
-        } else {
-          state.sortBy = col;
-          state.sortOrder = "desc";
-        }
-        state.page = 1;
-        loadLeads();
-      });
-    });
-
-    refs.leadTableBody.addEventListener("click", (e) => {
-      const row = e.target.closest("tr[data-id]");
-      if (!row) return;
-      const lead = state.leadsById.get(row.dataset.id);
-      if (lead) openLeadModal(lead);
-    });
-
-    refs.drawerCloseBtn.addEventListener("click", closeLeadDrawer);
-
-    refs.refreshBtn.addEventListener("click", () => refreshAll(true));
-
-    refs.exportCsvBtn.addEventListener("click", () => {
-      window.location.href = `/api/export/csv?${buildLeadsQuery()}`;
-    });
-
-    refs.exportExcelBtn.addEventListener("click", () => {
-      window.location.href = `/api/export/excel?${buildLeadsQuery()}`;
-    });
-
-    refs.sidebarToggle?.addEventListener("click", () => {
-      refs.sidebar.classList.toggle("open");
-    });
-
-    // Tab switcher events
-    document.querySelectorAll(".nav-link[data-tab]").forEach((link) => {
-      link.addEventListener("click", (e) => {
-        e.preventDefault();
-        switchTab(link.dataset.tab);
-        refs.sidebar.classList.remove("open");
-      });
-    });
-
-
-
-    // Wire Start/Stop scraper actions
-    refs.scrapeStartBtn.addEventListener("click", startScrape);
-    refs.scrapeStopBtn.addEventListener("click", stopScrape);
+  function updateFilenamePreview() {
+    const fn = getCalculatedFilename('xlsx');
+    const el = $('export-filename-preview');
+    if (el) {
+      el.textContent = `Target filename: ${fn}`;
+    }
   }
 
-  // -----------------------------------------------------------
-  // Scraper control
-  // -----------------------------------------------------------
+  // --- Row Checkbox Toggles ---
+  function toggleLeadSelect(idx, checked) {
+    if (checked) {
+      state.selectedLeadIds.add(idx);
+    } else {
+      state.selectedLeadIds.delete(idx);
+    }
+    updateExportSummary();
+  }
 
+  function toggleSelectAll(checked) {
+    if (checked) {
+      state.filteredLeads.forEach((_, idx) => state.selectedLeadIds.add(idx));
+    } else {
+      state.selectedLeadIds.clear();
+    }
+    renderTable();
+    updateExportSummary();
+  }
+
+  // --- Reset Filters ---
+  function resetFilters() {
+    state.search = '';
+    state.industry = '';
+    state.city = '';
+    state.country = '';
+    state.verifiedOnly = true;
+
+    $('filter-search').value = '';
+    $('filter-industry').value = '';
+    $('filter-city').value = '';
+    $('filter-country').value = '';
+
+    const btn = $('toggle-verified');
+    const check = $('verified-toggle-checkbox');
+    btn.classList.remove('inactive');
+    check.textContent = '☑';
+
+    applyLocalFilter();
+    showToast('Filters reset to default.');
+  }
+
+  // --- Verified Toggle ---
+  function toggleVerifiedOnly() {
+    state.verifiedOnly = !state.verifiedOnly;
+    const btn = $('toggle-verified');
+    const check = $('verified-toggle-checkbox');
+
+    if (state.verifiedOnly) {
+      btn.classList.remove('inactive');
+      check.textContent = '☑';
+      showToast('Filtering for Validated & Verified leads only.');
+    } else {
+      btn.classList.add('inactive');
+      check.textContent = '☐';
+      showToast('Showing all raw scraped entries.');
+    }
+
+    applyLocalFilter();
+  }
+
+  function toggleFieldSelector() {
+    const panel = $('field-selector-panel');
+    panel.style.display = panel.style.display === 'none' ? 'flex' : 'none';
+  }
+
+  function setIndustry(name) {
+    $('input-industry').value = name;
+    $('filter-industry').value = name;
+    state.industry = name;
+    applyLocalFilter();
+  }
+
+  function copyText(text, successMessage) {
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(text).then(() => {
+        showToast(successMessage);
+      });
+    }
+  }
+
+  // --- Scraper Operations ---
   async function startScrape() {
-    const businessType = refs.scrapeBusinessType.value.trim();
-    const country = refs.scrapeCountry.value.trim();
-    const maxCities = parseInt(refs.scrapeMaxCities.value, 10) || 30;
+    const industry = $('input-industry').value.trim();
+    const location = $('input-location').value.trim();
+    const maxCities = parseInt($('input-max-cities').value, 10) || 10;
 
-    if (!businessType) { refs.scrapeBusinessType.focus(); return; }
-    if (!country) { refs.scrapeCountry.focus(); return; }
+    if (!industry) {
+      showToast('Please enter a target industry.', false);
+      $('input-industry').focus();
+      return;
+    }
+    if (!location) {
+      showToast('Please enter a city or country.', false);
+      $('input-location').focus();
+      return;
+    }
 
-    setScraperFormDisabled(true);
+    // Set active filters to match the current scrape immediately
+    $('filter-industry').value = industry;
+    state.industry = industry;
+
+    const commonCountries = ['germany', 'united states', 'usa', 'united kingdom', 'uk', 'india', 'canada', 'australia', 'france', 'uae'];
+    const isCountry = commonCountries.includes(location.toLowerCase());
+
+    if (isCountry) {
+      $('filter-country').value = location;
+      state.country = location;
+      $('filter-city').value = '';
+      state.city = '';
+    } else {
+      $('filter-city').value = location;
+      state.city = location;
+      $('filter-country').value = '';
+      state.country = '';
+    }
+
+    updateFilenamePreview();
+
+    const payload = {
+      business_type: industry,
+      scope: isCountry ? 'country' : 'city',
+      country: isCountry ? location : null,
+      cities: isCountry ? null : location,
+      max_cities: maxCities,
+    };
 
     try {
-      const res = await fetch("/api/scrape/start", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ business_type: businessType, country: country, max_cities: maxCities }),
+      $('btn-start-scrape').style.display = 'none';
+      $('btn-stop-scrape').style.display = 'inline-flex';
+      $('scraper-progress-banner').style.display = 'block';
+
+      const res = await fetch('/api/scrape/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
       });
       const data = await res.json();
 
-      if (!data.ok) {
-        alert(data.error || "Failed to start scrape");
-        setScraperFormDisabled(false);
-        return;
+      if (data.status === 'started' || data.status === 'already_running') {
+        showToast(`Scraper launched for "${industry}" in ${location}!`);
+        state.scraper.isRunning = true;
+        startPolling();
+      } else {
+        showToast(data.message || 'Could not start scraper', false);
+        resetScraperButtons();
       }
-
-      refs.scraperProgress.classList.remove("d-none");
-      refs.scrapeLog.textContent = "";
-      startScrapePolling();
     } catch (err) {
-      console.error("Start scrape failed:", err);
-      alert("Failed to start scrape. Check the console.");
-      setScraperFormDisabled(false);
+      showToast('Failed to connect to scraper service.', false);
+      resetScraperButtons();
     }
   }
 
   async function stopScrape() {
     try {
-      await fetch("/api/scrape/stop", { method: "POST" });
+      await fetch('/api/scrape/stop', { method: 'POST' });
+      showToast('Stopping crawler operations...');
     } catch (err) {
-      console.error("Stop scrape failed:", err);
+      showToast('Error requesting stop.', false);
     }
   }
 
-  function setScraperFormDisabled(disabled) {
-    refs.scrapeBusinessType.disabled = disabled;
-    refs.scrapeCountry.disabled = disabled;
-    refs.scrapeMaxCities.disabled = disabled;
-    refs.scrapeStartBtn.disabled = disabled;
-
-    if (disabled) {
-      refs.scrapeStartBtn.classList.add("d-none");
-      refs.scrapeStopBtn.classList.remove("d-none");
-    } else {
-      refs.scrapeStartBtn.classList.remove("d-none");
-      refs.scrapeStopBtn.classList.add("d-none");
-    }
+  function startPolling() {
+    if (state.scraper.pollingInterval) clearInterval(state.scraper.pollingInterval);
+    state.scraper.pollingInterval = setInterval(checkScraperStatus, 1000);
   }
 
-  function startScrapePolling() {
-    if (scrapeState.polling) return;
-    scrapeState.polling = true;
-    pollScrapeStatus();
-  }
-
-  function stopScrapePolling() {
-    scrapeState.polling = false;
-    if (scrapeState.pollTimer) {
-      clearTimeout(scrapeState.pollTimer);
-      scrapeState.pollTimer = null;
-    }
-  }
-
-  async function pollScrapeStatus() {
-    if (!scrapeState.polling) return;
-
+  async function checkScraperStatus() {
     try {
-      const data = await fetchJson("/api/scrape/status");
-      updateScrapeUI(data);
+      const res = await fetch('/api/scrape/status');
+      const s = await res.json();
 
-      if (data.state === "completed" || data.state === "error") {
-        stopScrapePolling();
-        setScraperFormDisabled(false);
+      const running = s.state === 'running' || s.state === 'stopping';
+      if (running) {
+        state.scraper.isRunning = true;
+        if (!state.scraper.pollingInterval) {
+          startPolling();
+        }
+        $('btn-start-scrape').style.display = 'none';
+        $('btn-stop-scrape').style.display = 'inline-flex';
+        $('scraper-progress-banner').style.display = 'block';
 
-        // Give the cleaner 2s to write, then refresh
-        setTimeout(() => refreshAll(true), 2000);
-        return;
+        $('progress-state-text').textContent = `Crawling: ${s.business_type || 'Leads'}`;
+        $('progress-city-text').textContent = s.current_city ? `Hub: ${s.current_city}` : 'Initializing...';
+        $('progress-leads-count').textContent = (s.total_leads_found || 0).toLocaleString();
+        $('progress-pct-text').textContent = `${s.progress_pct || 0}%`;
+        $('progress-fill-bar').style.width = `${s.progress_pct || 0}%`;
+      } else {
+        if (state.scraper.isRunning) {
+          state.scraper.isRunning = false;
+          clearInterval(state.scraper.pollingInterval);
+          state.scraper.pollingInterval = null;
+          resetScraperButtons();
+          showToast('Scraping completed! Fresh dataset loaded.');
+          await loadInitialLeads();
+        }
       }
     } catch (err) {
-      console.error("Scrape status poll failed:", err);
-    }
-
-    scrapeState.pollTimer = setTimeout(pollScrapeStatus, SCRAPE_POLL_MS);
-  }
-
-  function formatElapsed(seconds) {
-    const m = Math.floor(seconds / 60);
-    const s = seconds % 60;
-    return m > 0 ? `${m}m ${s}s` : `${s}s`;
-  }
-
-  function renderHistoryRow(run) {
-    const statusClasses = {
-      completed: "status-completed",
-      running: "status-running",
-      stopping: "status-stopping",
-      error: "status-error",
-    };
-    const cls = statusClasses[run.status] || "";
-    const cleanStatus = run.status.charAt(0).toUpperCase() + run.status.slice(1);
-    
-    return `
-      <tr>
-        <td>${escapeHtml(run.timestamp)}</td>
-        <td class="fw-semibold text-white">${escapeHtml(run.business_type)}</td>
-        <td>${escapeHtml(run.country)}</td>
-        <td>${run.max_cities}</td>
-        <td>${run.leads_found}</td>
-        <td>${escapeHtml(run.duration)}</td>
-        <td><span class="${cls} fw-semibold">${cleanStatus}</span></td>
-      </tr>`;
-  }
-
-  function updateScrapeUI(data) {
-    // State badge
-    const badge = refs.scrapeStateBadge;
-    badge.textContent = data.state.charAt(0).toUpperCase() + data.state.slice(1);
-    badge.className = `scraper-state-badge ${data.state}`;
-
-    // Global Topbar Badge
-    const isActive = data.state === "running" || data.state === "stopping";
-    refs.globalScraperBadge.classList.toggle("active", isActive);
-
-    // Elapsed
-    refs.scrapeElapsed.textContent = data.elapsed_seconds ? formatElapsed(data.elapsed_seconds) : "";
-
-    // Stats
-    refs.scrapeCitiesDone.textContent = data.cities_completed || "0";
-    refs.scrapeLeadsFound.textContent = data.total_leads_found || "0";
-    refs.scrapeCurrentCity.textContent = data.current_city || "\u2014";
-
-    if (data.total_businesses > 0) {
-      refs.scrapeBusinessProgress.textContent = `${data.current_business_index}/${data.total_businesses}`;
-    } else {
-      refs.scrapeBusinessProgress.textContent = "\u2014";
-    }
-
-    // Progress bar
-    const pct = data.progress_pct || 0;
-    refs.scrapeProgressBar.style.width = `${pct}%`;
-    refs.scrapeProgressPct.textContent = `${pct}%`;
-
-    // Logs
-    if (data.logs && data.logs.length > 0) {
-      refs.scrapeLog.textContent = data.logs.join("\n");
-      refs.scrapeLog.scrollTop = refs.scrapeLog.scrollHeight;
-    }
-
-    // History Table
-    if (data.run_history && data.run_history.length > 0) {
-      refs.historySection.classList.remove("d-none");
-      refs.historyTableBody.innerHTML = data.run_history.map(renderHistoryRow).join("");
-    } else {
-      refs.historySection.classList.add("d-none");
-    }
-
-    // Hide stop button if not running
-    if (data.state === "stopping") {
-      refs.scrapeStopBtn.disabled = true;
-      refs.scrapeStopBtn.textContent = "Stopping…";
+      // Ignore network hiccup
     }
   }
 
-  // -----------------------------------------------------------
-  // Orchestration
-  // -----------------------------------------------------------
-
-  async function loadSpins() {
-    try {
-      const data = await fetchJson("/api/spins");
-      const spinFilter = refs.spinFilter;
-      if (!spinFilter) return;
-
-      const currentVal = spinFilter.value || "all";
-
-      let html = '<option value="all">All Historical Runs</option>';
-      if (data.spins && data.spins.length > 0) {
-        data.spins.forEach((s) => {
-          html += `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`;
-        });
-      }
-      spinFilter.innerHTML = html;
-      spinFilter.value = currentVal;
-    } catch (err) {
-      console.error("Failed to load spins list:", err);
-    }
+  function resetScraperButtons() {
+    $('btn-start-scrape').style.display = 'inline-flex';
+    $('btn-stop-scrape').style.display = 'none';
   }
 
-  async function refreshAll(isManual = false) {
-    try {
-      await Promise.all([loadStats(), loadCharts(), loadLeads(), loadSpins()]);
-      setSyncStatus(true);
-    } catch (err) {
-      console.error("Dashboard refresh failed:", err);
-      setSyncStatus(false);
-    }
+  // --- Export Engine ---
+  function exportData(format) {
+    const fields = Array.from(state.selectedFields).join(',');
+    const verifiedOnly = state.verifiedOnly ? 'true' : 'false';
+    const search = state.search ? encodeURIComponent(state.search) : '';
+    const industry = state.industry ? encodeURIComponent(state.industry) : '';
+    const city = state.city ? encodeURIComponent(state.city) : '';
+    const country = state.country ? encodeURIComponent(state.country) : '';
+
+    const url = `/api/export/custom?format=${format}&fields=${fields}&verified_only=${verifiedOnly}&search=${search}&industry=${industry}&city=${city}&country=${country}`;
+    showToast(`Downloading ${format.toUpperCase()} export matching current filters...`);
+    window.location.href = url;
   }
 
-  async function checkInitialScrapeState() {
-    try {
-      const data = await fetchJson("/api/scrape/status");
-      
-      // Load recent runs history initially if present
-      if (data.run_history && data.run_history.length > 0) {
-        refs.historySection.classList.remove("d-none");
-        refs.historyTableBody.innerHTML = data.run_history.map(renderHistoryRow).join("");
-      }
-
-      if (data.state === "running" || data.state === "stopping") {
-        refs.scraperProgress.classList.remove("d-none");
-        setScraperFormDisabled(true);
-        updateScrapeUI(data);
-        startScrapePolling();
-      }
-    } catch (err) {
-      // Status endpoint not available yet
-    }
+  async function reloadLeads() {
+    showToast('Refreshing leads from server...');
+    await loadInitialLeads();
+    showToast(`Loaded ${state.leads.length} leads successfully!`);
   }
 
-  function init() {
-    wireEvents();
-    refreshAll();
-    checkInitialScrapeState();
-    setInterval(refreshAll, REFRESH_INTERVAL_MS);
-  }
+  // --- Public API ---
+  window.LeadScraperApp = {
+    startScrape,
+    stopScrape,
+    setIndustry,
+    toggleFieldSelector,
+    selectAllFields,
+    toggleVerifiedOnly,
+    toggleLeadSelect,
+    toggleSelectAll,
+    resetFilters,
+    reloadLeads,
+    copyText,
+    exportData,
+  };
 
-  document.addEventListener("DOMContentLoaded", init);
+  document.addEventListener('DOMContentLoaded', init);
 })();

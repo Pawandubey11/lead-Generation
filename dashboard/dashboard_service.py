@@ -18,8 +18,10 @@ from __future__ import annotations
 import io
 import math
 import os
+import threading
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 
 # ---------------------------------------------------------------------------
@@ -128,29 +130,65 @@ COMPLETENESS_BUCKETS = [
 
 
 # ---------------------------------------------------------------------------
-# Loading
+# Loading — with mtime-based in-memory cache (Performance Fix #1)
 # ---------------------------------------------------------------------------
+
+_cache_lock = threading.Lock()
+_cached_df: Optional[pd.DataFrame] = None
+_cached_mtime: float = 0.0
+
 
 def csv_exists() -> bool:
     return os.path.isfile(CSV_PATH)
+
+
+def _csv_mtime() -> float:
+    """Return the CSV file modification time, or 0 if file doesn't exist."""
+    try:
+        return os.path.getmtime(CSV_PATH)
+    except OSError:
+        return 0.0
 
 
 def load_leads() -> Optional[pd.DataFrame]:
     """
     Load and normalize the leads CSV.
 
+    Uses an in-memory cache keyed on the file's mtime — the CSV is only
+    re-read from disk when it has actually been modified.  Returns a
+    *copy* so callers can freely mutate without polluting the cache.
+
     Returns None if the file does not exist (or is empty / unreadable),
     so callers can show the "No leads generated yet." state.
     """
+    global _cached_df, _cached_mtime
+
     if not csv_exists():
+        with _cache_lock:
+            _cached_df = None
+            _cached_mtime = 0.0
         return None
 
+    current_mtime = _csv_mtime()
+
+    # Fast path: return cached copy if file hasn't changed
+    with _cache_lock:
+        if _cached_df is not None and current_mtime == _cached_mtime:
+            return _cached_df.copy()
+
+    # Slow path: re-read from disk
     try:
         df = pd.read_csv(CSV_PATH)
     except (pd.errors.EmptyDataError, FileNotFoundError):
+        with _cache_lock:
+            _cached_df = None
+            _cached_mtime = current_mtime
         return None
 
     if df.empty:
+        with _cache_lock:
+            _cached_df = None
+            _cached_mtime = current_mtime
         return None
 
     df = df.rename(columns=RENAME_MAP)
@@ -182,7 +220,23 @@ def load_leads() -> Optional[pd.DataFrame]:
     df = df.reset_index(drop=True)
     df["id"] = df.index
 
-    return df
+    # Pre-compute concatenated lowercase search column (Performance Fix #9)
+    df["_search"] = (
+        df["business_name"].str.lower() + " " +
+        df["phone"].str.lower() + " " +
+        df["email"].str.lower() + " " +
+        df["website"].str.lower() + " " +
+        df["city"].str.lower()
+    )
+
+    # Store the CSV mtime hash so the frontend can skip no-op refreshes
+    df.attrs["_csv_mtime"] = current_mtime
+
+    with _cache_lock:
+        _cached_df = df
+        _cached_mtime = current_mtime
+
+    return df.copy()
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +334,20 @@ def get_unique_spins() -> List[str]:
     return sorted([str(s) for s in spins if str(s).strip()])
 
 
+def get_latest_spin() -> Optional[str]:
+    """Return the spin value of the most recent scrape run in the dataset."""
+    df = load_leads()
+    if df is None or df.empty or "spin" not in df.columns:
+        return None
+    valid_spins = df[df["spin"].fillna("").str.strip() != "Legacy Run"]
+    if valid_spins.empty:
+        valid_spins = df
+    if "scraped_at" in valid_spins.columns and valid_spins["scraped_at"].str.strip().any():
+        sorted_df = valid_spins.sort_values(by="scraped_at", ascending=False)
+        return str(sorted_df["spin"].iloc[0])
+    return str(valid_spins["spin"].iloc[-1])
+
+
 def apply_filters(
     df: pd.DataFrame,
     search: Optional[str] = None,
@@ -289,20 +357,27 @@ def apply_filters(
     spin: Optional[str] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    city: Optional[str] = None,
+    industry: Optional[str] = None,
+    country: Optional[str] = None,
 ) -> pd.DataFrame:
     filtered = df
 
+    # Use pre-computed _search column for fast text search (Performance Fix #9)
     if search:
         s = search.strip().lower()
         if s:
-            mask = (
-                filtered["business_name"].str.lower().str.contains(s, na=False)
-                | filtered["phone"].str.lower().str.contains(s, na=False)
-                | filtered["email"].str.lower().str.contains(s, na=False)
-                | filtered["website"].str.lower().str.contains(s, na=False)
-                | filtered["city"].str.lower().str.contains(s, na=False)
-            )
-            filtered = filtered[mask]
+            if "_search" in filtered.columns:
+                filtered = filtered[filtered["_search"].str.contains(s, na=False)]
+            else:
+                mask = (
+                    filtered["business_name"].str.lower().str.contains(s, na=False)
+                    | filtered["phone"].str.lower().str.contains(s, na=False)
+                    | filtered["email"].str.lower().str.contains(s, na=False)
+                    | filtered["website"].str.lower().str.contains(s, na=False)
+                    | filtered["city"].str.lower().str.contains(s, na=False)
+                )
+                filtered = filtered[mask]
 
     if priority and priority.lower() != "all":
         filtered = filtered[filtered["priority"].str.lower() == priority.lower()]
@@ -312,6 +387,42 @@ def apply_filters(
 
     if max_score is not None:
         filtered = filtered[filtered["lead_score"] <= max_score]
+
+    if city and city.lower() not in ("all", "none", "") and "city" in filtered.columns:
+        city_clean = city.strip().lower()
+        mask = (
+            filtered["city"].astype(str).str.lower().str.contains(city_clean, na=False)
+            | filtered["address"].astype(str).str.lower().str.contains(city_clean, na=False)
+        )
+        filtered = filtered[mask]
+
+    if country and country.lower() not in ("all", "none", ""):
+        c_clean = country.strip().lower()
+        mask = (
+            filtered["spin"].astype(str).str.lower().str.contains(c_clean, na=False)
+            | filtered["address"].astype(str).str.lower().str.contains(c_clean, na=False)
+            | filtered["city"].astype(str).str.lower().str.contains(c_clean, na=False)
+        )
+        if "country" in filtered.columns:
+            mask = mask | (filtered["country"].astype(str).str.lower().str.contains(c_clean, na=False))
+        filtered = filtered[mask]
+
+    if industry and industry.lower() not in ("all", "none", ""):
+        ind_clean = industry.split("/")[0].strip().lower()
+        if ind_clean in ("b2b", "b2b companies", "b2b software", "software"):
+            b2b_pattern = "software|it-|saas|cloud|webentwickl|digitalagentur|beratung|cybersecurity|analytics|erp|machine learning|wholesale|b2b|distributor|manufacturing|maschinenbau|logistics"
+            mask = (
+                filtered["spin"].astype(str).str.lower().str.contains(b2b_pattern, na=False)
+                | filtered["business_name"].astype(str).str.lower().str.contains(b2b_pattern, na=False)
+            )
+        else:
+            mask = (
+                filtered["spin"].astype(str).str.lower().str.contains(ind_clean, na=False)
+                | filtered["business_name"].astype(str).str.lower().str.contains(ind_clean, na=False)
+            )
+        if "business_type" in filtered.columns:
+            mask = mask | (filtered["business_type"].astype(str).str.lower().str.contains(ind_clean, na=False))
+        filtered = filtered[mask]
 
     if spin and spin.lower() != "all":
         filtered = filtered[filtered["spin"].str.lower() == spin.lower()]
@@ -338,6 +449,45 @@ def apply_sort(df: pd.DataFrame, sort_by: Optional[str], sort_order: Optional[st
     return df.sort_values(by=sort_by, ascending=ascending, kind="mergesort")
 
 
+def get_unique_cities() -> List[str]:
+    """Return all unique cities in the dataset."""
+    df = load_leads()
+    if df is None or df.empty or "city" not in df.columns:
+        return ["Berlin", "Munich", "Hamburg", "Frankfurt", "Cologne", "Düsseldorf", "Stuttgart", "Leipzig", "Dresden", "Nuremberg"]
+    cities = df["city"].dropna().astype(str).str.strip().unique().tolist()
+    valid = sorted([c for c in cities if c and c.lower() not in ("nan", "none", "")])
+    return valid if valid else ["Berlin", "Munich", "Hamburg", "Frankfurt", "Cologne"]
+
+
+def get_unique_industries() -> List[str]:
+    """Return all standard target industries including B2B categories."""
+    standard = [
+        "Software Companies / Softwareunternehmen",
+        "B2B Software & IT Companies",
+        "IT Services / IT-Dienstleister",
+        "SaaS Companies",
+        "Wholesale / B2B Distributors",
+        "Manufacturing / Maschinenbau",
+        "Logistics / Transport",
+        "Handwerk / Trades",
+        "Construction Companies",
+        "Real Estate / Immobilien",
+        "Professional Services",
+        "Hotels / Hospitality",
+        "Healthcare / Medical Businesses",
+        "Automotive Workshops / Dealers"
+    ]
+    df = load_leads()
+    if df is not None and not df.empty and "spin" in df.columns:
+        extracted = []
+        for s in df["spin"].dropna().unique():
+            cat = str(s).split(" in ")[0].split(" (")[0].strip()
+            if cat and cat not in standard and cat not in extracted:
+                extracted.append(cat)
+        return standard + extracted
+    return standard
+
+
 def get_filtered_leads(
     search: Optional[str] = None,
     priority: Optional[str] = None,
@@ -348,13 +498,16 @@ def get_filtered_leads(
     spin: Optional[str] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    city: Optional[str] = None,
+    industry: Optional[str] = None,
+    country: Optional[str] = None,
 ) -> Optional[pd.DataFrame]:
     """Returns the full filtered+sorted DataFrame (no pagination), or None if no data."""
     df = load_leads()
     if df is None:
         return None
 
-    df = apply_filters(df, search, priority, min_score, max_score, spin, start_date, end_date)
+    df = apply_filters(df, search, priority, min_score, max_score, spin, start_date, end_date, city=city, industry=industry, country=country)
     df = apply_sort(df, sort_by, sort_order)
     return df
 
@@ -371,8 +524,11 @@ def get_leads_page(
     spin: Optional[str] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    city: Optional[str] = None,
+    industry: Optional[str] = None,
+    country: Optional[str] = None,
 ) -> Dict[str, Any]:
-    df = get_filtered_leads(search, priority, min_score, max_score, sort_by, sort_order, spin, start_date, end_date)
+    df = get_filtered_leads(search, priority, min_score, max_score, sort_by, sort_order, spin, start_date, end_date, city=city, industry=industry, country=country)
 
     if df is None:
         return {
@@ -383,11 +539,13 @@ def get_leads_page(
             "page": 1,
             "page_size": page_size,
             "total_pages": 0,
+            "available_cities": get_unique_cities(),
+            "available_industries": get_unique_industries(),
         }
 
     total = len(df)
     page = max(page, 1)
-    page_size = max(min(page_size, 500), 1)
+    page_size = max(min(page_size, 5000), 1)
     total_pages = max(math.ceil(total / page_size), 1)
     page = min(page, total_pages)
 
@@ -405,11 +563,13 @@ def get_leads_page(
         "page": int(page),
         "page_size": int(page_size),
         "total_pages": int(total_pages),
+        "available_cities": get_unique_cities(),
+        "available_industries": get_unique_industries(),
     }
 
 
 # ---------------------------------------------------------------------------
-# Export
+# Export  (legacy internal columns — kept for backward compatibility)
 # ---------------------------------------------------------------------------
 
 EXPORT_COLUMNS = [
@@ -424,32 +584,539 @@ EXPORT_HEADERS = [
 
 
 def _export_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Legacy internal export — not used by CSV/Excel endpoints anymore."""
     export_df = df[EXPORT_COLUMNS].copy()
     export_df.columns = EXPORT_HEADERS
     return export_df
 
 
-def export_csv_bytes(df: pd.DataFrame) -> bytes:
-    export_df = _export_dataframe(df)
+# ---------------------------------------------------------------------------
+# CRM Export — 16-column schema for direct CRM data ingestion
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+CRM_EXPORT_COLUMNS = [
+    "External ID",
+    "Name",
+    "Company Name",
+    "Contact Name",
+    "Email",
+    "Job Position",
+    "Phone",
+    "Mobile",
+    "Street",
+    "Street2",
+    "City",
+    "State",
+    "Zip",
+    "Country",
+    "Website",
+    "Notes",
+]
+
+# RFC 5322 simplified email validation regex
+_EMAIL_RE = _re.compile(
+    r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$"
+)
+
+# Indian PIN codes (6 digits) and generic postal/ZIP codes
+_ZIP_RE = _re.compile(r"\b(\d{5,6})\b")
+
+# Indian states — used to parse state from address strings
+_INDIAN_STATES = [
+    "Andhra Pradesh", "Arunachal Pradesh", "Assam", "Bihar", "Chhattisgarh",
+    "Goa", "Gujarat", "Haryana", "Himachal Pradesh", "Jharkhand", "Karnataka",
+    "Kerala", "Madhya Pradesh", "Maharashtra", "Manipur", "Meghalaya",
+    "Mizoram", "Nagaland", "Odisha", "Punjab", "Rajasthan", "Sikkim",
+    "Tamil Nadu", "Telangana", "Tripura", "Uttar Pradesh", "Uttarakhand",
+    "West Bengal", "Delhi", "New Delhi", "NCT of Delhi",
+    "Jammu and Kashmir", "Ladakh", "Chandigarh", "Puducherry",
+    "Andaman and Nicobar Islands", "Dadra and Nagar Haveli",
+    "Daman and Diu", "Lakshadweep",
+]
+# Pre-compile for fast matching (case-insensitive)
+_STATE_RE = _re.compile(
+    r"\b(" + "|".join(_re.escape(s) for s in _INDIAN_STATES) + r")\b",
+    _re.IGNORECASE,
+)
+
+# Country name → ISO 3166-1 alpha-2 mapping (covers common scrape targets)
+_COUNTRY_TO_ISO = {
+    "india": "IN", "united states": "US", "usa": "US", "us": "US",
+    "united kingdom": "GB", "uk": "GB", "great britain": "GB",
+    "canada": "CA", "australia": "AU", "germany": "DE", "france": "FR",
+    "italy": "IT", "spain": "ES", "brazil": "BR", "mexico": "MX",
+    "japan": "JP", "china": "CN", "south korea": "KR", "korea": "KR",
+    "singapore": "SG", "malaysia": "MY", "indonesia": "ID",
+    "thailand": "TH", "vietnam": "VN", "philippines": "PH",
+    "saudi arabia": "SA", "uae": "AE", "united arab emirates": "AE",
+    "dubai": "AE", "qatar": "QA", "kuwait": "KW", "bahrain": "BH",
+    "oman": "OM", "egypt": "EG", "south africa": "ZA", "nigeria": "NG",
+    "kenya": "KE", "russia": "RU", "turkey": "TR", "netherlands": "NL",
+    "belgium": "BE", "switzerland": "CH", "sweden": "SE", "norway": "NO",
+    "denmark": "DK", "finland": "FI", "poland": "PL", "portugal": "PT",
+    "ireland": "IE", "new zealand": "NZ", "pakistan": "PK",
+    "bangladesh": "BD", "sri lanka": "LK", "nepal": "NP",
+    "argentina": "AR", "colombia": "CO", "chile": "CL", "peru": "PE",
+    "israel": "IL", "taiwan": "TW", "hong kong": "HK",
+}
+
+
+def _resolve_country_code(row: dict) -> str:
+    """
+    Resolve ISO 3166-1 alpha-2 country code from available data.
+
+    Priority order:
+      1. Explicit ``country`` column value (if already a valid 2-letter code)
+      2. Explicit ``country`` column value mapped through _COUNTRY_TO_ISO
+      3. Country name extracted from ``spin`` text (e.g. "gym in india …")
+      4. Empty string (zero hallucination)
+    """
+    # Try the explicit country column first
+    raw_country = str(row.get("country", "")).strip()
+    if raw_country:
+        # Already a 2-letter ISO code?
+        if len(raw_country) == 2 and raw_country.isalpha():
+            return raw_country.upper()
+        mapped = _COUNTRY_TO_ISO.get(raw_country.lower())
+        if mapped:
+            return mapped
+
+    # Try extracting from spin: "gym in india (2026-07-04 23:40)"
+    spin = str(row.get("spin", "")).strip()
+    if spin:
+        # Remove the date suffix in parentheses
+        clean = _re.sub(r"\s*\(.*?\)\s*$", "", spin).strip().lower()
+        # Try matching " in <country>" pattern
+        m = _re.search(r"\bin\s+(.+)$", clean)
+        if m:
+            country_name = m.group(1).strip()
+            mapped = _COUNTRY_TO_ISO.get(country_name)
+            if mapped:
+                return mapped
+
+    return ""
+
+
+def _parse_address(address: str) -> dict:
+    """
+    Best-effort parse of a free-text address into Street, State, Zip.
+
+    Returns dict with keys: street, state, zip.
+    Unparseable components → empty string (zero hallucination).
+    """
+    result = {"street": "", "state": "", "zip": ""}
+    if not address or not address.strip():
+        return result
+
+    addr = address.strip()
+
+    # Extract ZIP/PIN code
+    zip_match = _ZIP_RE.search(addr)
+    if zip_match:
+        result["zip"] = zip_match.group(1)
+
+    # Extract state
+    state_match = _STATE_RE.search(addr)
+    if state_match:
+        result["state"] = state_match.group(1).title()
+
+    # Street = full address (the most reliable representation)
+    result["street"] = addr
+
+    return result
+
+
+def _validate_email(email: str) -> str:
+    """Return the email if it passes RFC 5322 validation, else empty string."""
+    if not email or not email.strip():
+        return ""
+    email = email.strip()
+    return email if _EMAIL_RE.match(email) else ""
+
+
+# Country-code → international dialing code for phone normalisation
+_COUNTRY_DIAL_CODE = {
+    "IN": "+91", "US": "+1",  "GB": "+44", "AU": "+61", "CA": "+1",
+    "DE": "+49", "FR": "+33", "IT": "+39", "ES": "+34", "BR": "+55",
+    "MX": "+52", "JP": "+81", "CN": "+86", "KR": "+82", "SG": "+65",
+    "MY": "+60", "ID": "+62", "TH": "+66", "PH": "+63", "SA": "+966",
+    "AE": "+971", "QA": "+974", "KW": "+965", "EG": "+20", "ZA": "+27",
+    "NG": "+234", "KE": "+254", "PK": "+92", "BD": "+880", "LK": "+94",
+    "NP": "+977", "TR": "+90", "NL": "+31", "BE": "+32", "CH": "+41",
+    "SE": "+46", "NO": "+47", "DK": "+45", "FI": "+358", "PL": "+48",
+    "PT": "+351", "IE": "+353", "NZ": "+64", "AR": "+54", "CO": "+57",
+    "CL": "+56", "PE": "+51", "IL": "+972", "TW": "+886", "HK": "+852",
+    "RU": "+7", "VN": "+84",
+}
+
+
+def _normalise_phone(phone: str, country_code: str) -> str:
+    """
+    Normalise a phone number to international format (e.g. +91 98765 43210).
+    - If the number already starts with '+', return it unchanged.
+    - Otherwise, strip a leading '0' (local trunk prefix) and prepend the
+      international dialling code for the given country.
+    - If no dial code is known, return the original number.
+    """
+    p = phone.strip()
+    if not p:
+        return ""
+    if p.startswith("+"):
+        return p  # already international format
+    dial = _COUNTRY_DIAL_CODE.get(country_code, "")
+    if not dial:
+        return p  # unknown country — leave as-is
+    # Strip leading trunk zero
+    local = p.lstrip("0") if p.startswith("0") else p
+    return f"{dial} {local}"
+
+
+def filter_verified_leads(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Filter DataFrame to include ONLY verified leads:
+    - Must have a valid email address (RFC 5322) OR high contact completeness (>= 50%).
+    - Excludes unverified leads missing both valid email and phone contact info.
+    """
+    if df is None or df.empty:
+        return df
+
+    # Vectorized email validation using str.match() (Performance Fix #8)
+    email_col = df["email"].fillna("").astype(str) if "email" in df.columns else pd.Series([""] * len(df), index=df.index)
+    has_email_mask = email_col.str.strip().str.match(
+        r'^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$', na=False
+    )
+
+    # Check for contact completeness (>= 50%)
+    comp_col = "contact_completeness" if "contact_completeness" in df.columns else ("Contact Completeness %" if "Contact Completeness %" in df.columns else None)
+    if comp_col:
+        completeness = pd.to_numeric(df[comp_col], errors="coerce").fillna(0)
+    else:
+        completeness = pd.Series([0] * len(df), index=df.index)
+    high_completeness_mask = completeness >= 50
+
+    # Phone contact check
+    phone_col = df["phone"].fillna("").astype(str) if "phone" in df.columns else pd.Series([""] * len(df), index=df.index)
+    has_phone_mask = phone_col.str.strip() != ""
+
+    verified_mask = has_email_mask | (high_completeness_mask & has_phone_mask)
+    filtered_df = df[verified_mask].copy()
+    
+    # If filtering returned empty, return original df so export schema is preserved
+    return filtered_df if not filtered_df.empty else df
+
+
+def _build_crm_export_dataframe(df: pd.DataFrame, verified_only: bool = True) -> pd.DataFrame:
+    """
+    Transform the internal leads DataFrame into the strict 16-column CRM
+    ingestion schema.
+
+    - Filters for verified leads only when verified_only is True
+    - Generates unique External IDs
+    - Validates emails (RFC 5322)
+    - Parses addresses into Street / State / Zip
+    - Resolves country to ISO 3166-1 alpha-2
+    - Builds Notes from business context only (no SPI)
+    - Leaves unavailable fields blank (zero hallucination)
+
+    Performance Fix #5: Vectorized — no iterrows().
+    """
+    if verified_only and df is not None and not df.empty:
+        df = filter_verified_leads(df)
+
+    if df is None or df.empty:
+        return pd.DataFrame(columns=CRM_EXPORT_COLUMNS)
+
+    # Work on a clean copy
+    w = df.reset_index(drop=True).copy()
+    n = len(w)
+
+    # --- External IDs ---
+    ext_ids = [f"crm_lead_{i + 1}" for i in range(n)]
+
+    # --- String columns (safe fillna + strip) ---
+    biz_name = w["business_name"].fillna("").astype(str).str.strip()
+    address_col = w["address"].fillna("").astype(str).str.strip()
+    city_col = w["city"].fillna("").astype(str).str.strip()
+    website_col = w["website"].fillna("").astype(str).str.strip()
+    email_raw = w["email"].fillna("").astype(str).str.strip()
+    phone_raw = w["phone"].fillna("").astype(str).str.strip()
+    priority_col = w["priority"].fillna("").astype(str).str.strip()
+    score_col = w["lead_score"].fillna(0)
+    comp_col = w["contact_completeness"].fillna(0)
+
+    # --- Vectorized email validation ---
+    valid_email_mask = email_raw.str.match(
+        r'^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$', na=False
+    )
+    validated_emails = email_raw.where(valid_email_mask, "")
+
+    # --- Address parsing (vectorized where possible) ---
+    zip_extracted = address_col.str.extract(r'\b(\d{5,6})\b', expand=False).fillna("")
+    state_extracted = address_col.str.extract(
+        r'\b(' + '|'.join(_re.escape(s) for s in _INDIAN_STATES) + r')\b',
+        expand=False, flags=_re.IGNORECASE
+    ).fillna("").str.title()
+
+    # --- Country resolution (vectorized for common cases) ---
+    country_raw = w["country"].fillna("").astype(str).str.strip() if "country" in w.columns else pd.Series([""] * n, index=w.index)
+    spin_col = w["spin"].fillna("").astype(str).str.strip() if "spin" in w.columns else pd.Series([""] * n, index=w.index)
+    # Apply per-row only for country resolution (complex logic)
+    country_codes = pd.Series(
+        [_resolve_country_code({"country": c, "spin": s}) for c, s in zip(country_raw, spin_col)],
+        index=w.index
+    )
+
+    # --- Phone normalisation (vectorized) ---
+    phones_normalised = pd.Series(
+        [_normalise_phone(p, cc) for p, cc in zip(phone_raw, country_codes)],
+        index=w.index
+    )
+
+    # --- Notes (vectorized string concat) ---
+    notes_priority = "Priority: " + priority_col
+    notes_score = np.where(score_col != 0, " | Score: " + score_col.astype(str), "")
+    notes_comp = np.where(comp_col != 0, " | Completeness: " + comp_col.astype(str) + "%", "")
+
+    ig_col = w["instagram"].fillna("").astype(str).str.strip()
+    fb_col = w["facebook"].fillna("").astype(str).str.strip()
+    li_col = w["linkedin"].fillna("").astype(str).str.strip()
+    notes_ig = np.where(ig_col != "", " | Instagram: " + ig_col, "")
+    notes_fb = np.where(fb_col != "", " | Facebook: " + fb_col, "")
+    notes_li = np.where(li_col != "", " | Linkedin: " + li_col, "")
+
+    notes_all = notes_priority + notes_score + notes_comp + notes_ig + notes_fb + notes_li
+
+    # --- Build the CRM DataFrame ---
+    crm_df = pd.DataFrame({
+        "External ID": ext_ids,
+        "Name": biz_name,
+        "Company Name": biz_name,
+        "Contact Name": "",
+        "Email": validated_emails,
+        "Job Position": "",
+        "Phone": phones_normalised,
+        "Mobile": "",
+        "Street": address_col,
+        "Street2": "",
+        "City": city_col,
+        "State": state_extracted,
+        "Zip": zip_extracted,
+        "Country": country_codes,
+        "Website": website_col,
+        "Notes": notes_all,
+    })
+
+    return crm_df[CRM_EXPORT_COLUMNS]
+
+
+# ---------------------------------------------------------------------------
+# Public export functions (CSV + Excel)
+# ---------------------------------------------------------------------------
+
+def export_csv_bytes(df: pd.DataFrame, verified_only: bool = True) -> bytes:
+    export_df = _build_crm_export_dataframe(df, verified_only=verified_only)
     buf = io.StringIO()
     export_df.to_csv(buf, index=False)
     return buf.getvalue().encode("utf-8")
 
 
-def export_excel_bytes(df: pd.DataFrame) -> bytes:
-    export_df = _export_dataframe(df)
+def export_excel_bytes(df: pd.DataFrame, verified_only: bool = True) -> bytes:
+    export_df = _build_crm_export_dataframe(df, verified_only=verified_only)
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        export_df.to_excel(writer, index=False, sheet_name="Leads")
+        export_df.to_excel(writer, index=False, sheet_name="CRM Leads")
 
-        # Light auto-fit so the exported file looks professional out of the box.
-        worksheet = writer.sheets["Leads"]
+        # Auto-fit columns so the exported file looks professional out of the box.
+        worksheet = writer.sheets["CRM Leads"]
         for i, col in enumerate(export_df.columns, start=1):
             max_len = max(
-                [len(str(col))] + [len(str(v)) for v in export_df.iloc[:, i - 1].astype(str)]
+                [len(str(col))] +
+                [len(str(v)) for v in export_df.iloc[:, i - 1].astype(str)]
             )
-            worksheet.column_dimensions[worksheet.cell(row=1, column=i).column_letter].width = min(
-                max(max_len + 2, 10), 50
-            )
+            worksheet.column_dimensions[
+                worksheet.cell(row=1, column=i).column_letter
+            ].width = min(max(max_len + 3, 12), 55)
     buf.seek(0)
     return buf.getvalue()
+
+
+CUSTOM_FIELD_LABEL_MAP = {
+    "business_name": "Company Name",
+    "email": "Email Address",
+    "phone": "Phone Number",
+    "website": "Website",
+    "address": "Street Address",
+    "city": "City",
+    "lead_score": "Lead Quality Score",
+    "priority": "Priority",
+    "contact_completeness": "Contact Completeness %",
+    "instagram": "Instagram",
+    "facebook": "Facebook",
+    "linkedin": "LinkedIn",
+    "spin": "Search Query / Niche",
+    "scraped_at": "Extracted Date",
+}
+
+def export_custom_dataset(
+    df: pd.DataFrame,
+    fields: Optional[List[str]] = None,
+    format: str = "csv",
+    verified_only: bool = True
+) -> bytes:
+    """Exports dataset with custom selected columns in CSV or Excel format."""
+    if verified_only and df is not None and not df.empty:
+        df = filter_verified_leads(df)
+
+    if df is None or df.empty:
+        df = pd.DataFrame(columns=["business_name", "email", "phone", "website", "city"])
+
+    # Default fields if none specified
+    if not fields:
+        fields = ["business_name", "email", "phone", "website", "city", "address", "lead_score", "priority"]
+
+    # Filter available columns
+    available_cols = [f for f in fields if f in df.columns]
+    if not available_cols:
+        available_cols = [c for c in ["business_name", "email", "phone", "website", "city"] if c in df.columns]
+
+    out_df = df[available_cols].copy()
+
+    # Rename columns to human-friendly headers
+    rename_dict = {col: CUSTOM_FIELD_LABEL_MAP.get(col, col.replace("_", " ").title()) for col in available_cols}
+    out_df = out_df.rename(columns=rename_dict)
+
+    if format.lower() == "excel" or format.lower() == "xlsx":
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+            out_df.to_excel(writer, index=False, sheet_name="Scraped Leads")
+            worksheet = writer.sheets["Scraped Leads"]
+            for i, col in enumerate(out_df.columns, start=1):
+                max_len = max([len(str(col))] + [len(str(v)) for v in out_df.iloc[:, i - 1].astype(str)])
+                worksheet.column_dimensions[worksheet.cell(row=1, column=i).column_letter].width = min(max(max_len + 3, 12), 55)
+        buf.seek(0)
+        return buf.getvalue()
+    else:
+        buf = io.StringIO()
+        out_df.to_csv(buf, index=False)
+        return buf.getvalue().encode("utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Verified Startup Leads Classification & Pipeline
+# ---------------------------------------------------------------------------
+
+def get_verified_startup_leads(
+    stage: Optional[str] = None,
+    service: Optional[str] = None,
+    search: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 25,
+) -> Dict[str, Any]:
+    df = load_leads()
+    if df is None or df.empty:
+        return {
+            "has_data": False,
+            "total": 0,
+            "page": 1,
+            "page_size": page_size,
+            "total_pages": 0,
+            "beginning_count": 0,
+            "mid_count": 0,
+            "leads": [],
+        }
+
+    # Filter for Verified Leads: Must have a valid email or high completeness (>= 50%)
+    has_email_mask = df["email"].str.contains("@", na=False)
+    high_completeness_mask = df["contact_completeness"] >= 50
+    verified_mask = has_email_mask | high_completeness_mask
+    v_df = df[verified_mask].copy()
+
+    if v_df.empty:
+        return {
+            "has_data": False,
+            "total": 0,
+            "page": 1,
+            "page_size": page_size,
+            "total_pages": 0,
+            "beginning_count": 0,
+            "mid_count": 0,
+            "leads": [],
+        }
+
+    # Assign Startup Stage & Required Service Pitch
+    # Vectorized classify_startup (Performance Fix #4 — replaces slow .apply(axis=1))
+    has_web = v_df["has_website"].str.strip().str.lower().isin(["yes", "true", "1"])
+    has_em = v_df["has_email"].str.strip().str.lower().isin(["yes", "true", "1"])
+    has_social = v_df["has_social_media"].str.strip().str.lower().isin(["yes", "true", "1"])
+    score = v_df["lead_score"]
+
+    # Stage classification:
+    # Mid-Level: Lead score >= 75 or established contact details
+    # Beginning-Stage: everything else
+    is_mid = (score >= 75) | (has_web & has_em & has_social)
+    v_df["startup_stage"] = np.where(is_mid, "Mid-Level Startup", "Beginning-Stage Startup")
+    v_df["stage_key"] = np.where(is_mid, "mid", "beginning")
+
+    # Service Requirement Mapping (priority order via np.select)
+    svc_conditions = [
+        ~has_web,
+        ~has_social,
+        has_em,
+    ]
+    svc_names = ["Web Design & Digital Presence", "Social Media Growth & Marketing", "B2B Cold Email Outreach"]
+    svc_keys = ["web_design", "seo", "email_outreach"]
+    v_df["required_service"] = np.select(svc_conditions, svc_names, default="CRM Lead Automation & Scaling")
+    v_df["service_key"] = np.select(svc_conditions, svc_keys, default="automation")
+
+    # Calculate overall counts before filtering
+    beginning_count = int((v_df["stage_key"] == "beginning").sum())
+    mid_count = int((v_df["stage_key"] == "mid").sum())
+
+    # Apply stage filter
+    if stage and stage.lower() in ("beginning", "mid"):
+        v_df = v_df[v_df["stage_key"] == stage.lower()]
+
+    # Apply service filter
+    if service and service.lower() != "all":
+        v_df = v_df[v_df["service_key"] == service.lower()]
+
+    # Apply search filter
+    if search:
+        s = search.strip().lower()
+        if s:
+            search_mask = (
+                v_df["business_name"].str.lower().str.contains(s, na=False)
+                | v_df["email"].str.lower().str.contains(s, na=False)
+                | v_df["phone"].str.lower().str.contains(s, na=False)
+                | v_df["city"].str.lower().str.contains(s, na=False)
+                | v_df["required_service"].str.lower().str.contains(s, na=False)
+            )
+            v_df = v_df[search_mask]
+
+    # Sort by lead score desc
+    v_df = v_df.sort_values(by="lead_score", ascending=False)
+
+    total_records = len(v_df)
+    total_pages = max(1, math.ceil(total_records / page_size))
+    page = max(1, min(page, total_pages))
+
+    start_idx = (page - 1) * page_size
+    end_idx = start_idx + page_size
+    page_df = v_df.iloc[start_idx:end_idx]
+
+    records = page_df.to_dict("records")
+    for r in records:
+        r["id"] = int(r["id"]) if "id" in r else 0
+
+    return {
+        "has_data": True,
+        "total": total_records,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+        "beginning_count": beginning_count,
+        "mid_count": mid_count,
+        "leads": records,
+    }

@@ -1,3 +1,11 @@
+import sys
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
+    except Exception:
+        pass
+
 import re
 import time
 import json
@@ -19,9 +27,13 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 #   1. GOOGLE_COOKIES_PATH env var
 #   2. /app/config/google_cookies.json  (Docker / server path)
 #   3. config/google_cookies.json       (local dev path)
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(_THIS_DIR)
+OUTPUT_DIR = os.path.join(PROJECT_ROOT, "output")
+
 COOKIE_SEARCH_PATHS = [
     os.environ.get("GOOGLE_COOKIES_PATH", ""),
-    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "google_cookies.json"),
+    os.path.join(PROJECT_ROOT, "config", "google_cookies.json"),
     "/app/config/google_cookies.json",
 ]
 
@@ -354,6 +366,9 @@ def fetch_cities_via_wikipedia_search(country, max_cities=30):
 
 
 def get_cities(country, max_cities=30):
+    if not country or not str(country).strip():
+        print("  [get_cities] No country specified. Skipping city lookup.")
+        return []
 
     print(f"\nLooking up major cities for '{country}'...")
 
@@ -423,16 +438,11 @@ def new_context(browser):
     """
     context = browser.new_context(
         viewport={"width": 1280, "height": 800},
-        locale="en-IN",
-        timezone_id="Asia/Kolkata",
-        geolocation={"latitude": 20.5937, "longitude": 78.9629},  # India center
-        permissions=["geolocation"],
         user_agent=(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/120.0.0.0 Safari/537.36"
         ),
-        extra_http_headers={"Accept-Language": "en-IN,en;q=0.9"},
     )
     _inject_cookies(context, _get_cookies())
     return context
@@ -509,7 +519,7 @@ def _save_debug_artifacts(page, city):
     showing up as a bare timeout with no leads.
     """
     try:
-        debug_dir = os.path.join("output", "debug")
+        debug_dir = os.path.join(OUTPUT_DIR, "debug")
         os.makedirs(debug_dir, exist_ok=True)
         safe_city = re.sub(r"[^a-zA-Z0-9_-]", "_", city)
         png_path = os.path.join(debug_dir, f"{safe_city}.png")
@@ -703,7 +713,7 @@ def scrape_city(business_type, city, p, browser, page):
     search_url = (
         "https://www.google.com/maps/search/"
         + search_query.strip().replace(" ", "+")
-        + "?hl=en&gl=in"
+        + "?hl=en"
     )
 
     try:
@@ -721,15 +731,36 @@ def scrape_city(business_type, city, p, browser, page):
         # ---- Handle Google's consent wall ----
         dismiss_consent_wall(page)
 
-        time.sleep(5)
-        page.wait_for_selector('div[role="feed"]', timeout=30000)
+        time.sleep(3)
+        
+        # Robust feed selector detection
+        scrollable_div = None
+        for feed_sel in ['div[role="feed"]', 'div[aria-label*="Results for"]', 'div.m6QErb[aria-label]', 'div.m6QErb']:
+            try:
+                if page.locator(feed_sel).count() > 0:
+                    scrollable_div = page.locator(feed_sel).first
+                    break
+            except Exception:
+                continue
+
+        if not scrollable_div:
+            try:
+                page.wait_for_selector('div[role="feed"], a[href*="/place/"]', timeout=15000)
+                if page.locator('div[role="feed"]').count() > 0:
+                    scrollable_div = page.locator('div[role="feed"]').first
+                else:
+                    scrollable_div = page.locator('body')
+            except Exception:
+                scrollable_div = page.locator('body')
 
     except Exception as e:
         print(f"  Failed to load Maps for {city}: {e}")
         _save_debug_artifacts(page, city)
         return city_leads, browser, page
 
-    scrollable_div = page.locator('div[role="feed"]').first
+    if not scrollable_div:
+        scrollable_div = page.locator('body')
+
     previous_count = 0
     same_count = 0
 
@@ -771,7 +802,10 @@ def scrape_city(business_type, city, p, browser, page):
     except:
         pass
 
-    if is_quick:
+    max_biz_env = os.environ.get("MAX_BIZ_PER_CITY")
+    if max_biz_env and max_biz_env.isdigit():
+        business_links = business_links[:int(max_biz_env)]
+    elif is_quick:
         business_links = business_links[:3]
 
     print(f"\n  Found {len(business_links)} businesses in {city}")
@@ -801,14 +835,17 @@ def scrape_city(business_type, city, p, browser, page):
 # MAIN GENERATE LEADS — COUNTRY MODE
 # ============================================
 
-def generate_leads(business_type, country, max_cities=30):
-    os.makedirs("output", exist_ok=True)
+def generate_leads(business_type, country, max_cities=30, custom_cities=None):
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    cities = get_cities(country, max_cities=max_cities)
+    if custom_cities:
+        cities = custom_cities
+    else:
+        cities = get_cities(country, max_cities=max_cities)
     all_leads = []
 
     # Progress tracking — resume if interrupted
-    progress_file = "output/progress.txt"
+    progress_file = os.path.join(OUTPUT_DIR, "progress.txt")
     completed_cities = set()
 
     if os.path.exists(progress_file):
@@ -819,7 +856,7 @@ def generate_leads(business_type, country, max_cities=30):
     remaining_cities = [c for c in cities if c not in completed_cities]
 
     # Load existing leads if resuming
-    raw_output = "output/local_business_leads.csv"
+    raw_output = os.path.join(OUTPUT_DIR, "local_business_leads.csv")
     if os.path.exists(raw_output) and completed_cities:
         existing_df = pd.read_csv(raw_output)
         all_leads = existing_df.to_dict("records")
@@ -830,6 +867,14 @@ def generate_leads(business_type, country, max_cities=30):
 
     scraped_time = time.strftime("%Y-%m-%d %H:%M:%S")
     friendly_spin = f"{business_type} in {country} ({scraped_time[:16]})"
+
+    import asyncio
+    import sys
+    if sys.platform == 'win32':
+        # On Windows, background threads default to SelectorEventLoop which does not
+        # support subprocesses (required by Playwright to spawn browser).
+        # We explicitly force the ProactorEventLoopPolicy.
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
     with sync_playwright() as p:
         browser = launch_browser(p)
@@ -844,9 +889,10 @@ def generate_leads(business_type, country, max_cities=30):
                 business_type, city, p, browser, page
             )
 
+            scrape_time = time.strftime("%Y-%m-%d %H:%M:%S")  # Per-city timestamp (DQ-006)
             for lead in city_leads:
                 lead["spin"] = friendly_spin
-                lead["scraped_at"] = scraped_time
+                lead["scraped_at"] = scrape_time  # Time of THIS city's scrape
 
             all_leads.extend(city_leads)
 
@@ -867,13 +913,17 @@ def generate_leads(business_type, country, max_cities=30):
                 df_temp = current_run_df
 
             df_temp.drop_duplicates(subset=["business_name", "spin"], inplace=True)
-            df_temp.to_csv(raw_output, index=False)
+            # Atomic write: write to temp file then rename — prevents dashboard
+            # reading a partially-written CSV (INFRA-003)
+            _tmp = raw_output + ".tmp"
+            df_temp.to_csv(_tmp, index=False)
+            os.replace(_tmp, raw_output)
 
             print(f"\n  Progress saved — Total leads so far: {len(df_temp)}")
             _notify("city_done", {"city": city, "city_index": city_idx + 1, "total_cities": len(remaining_cities), "city_leads_count": len(city_leads), "total_leads": len(df_temp)})
 
-            # Small delay between cities to avoid rate limiting
-            time.sleep(5)
+            # Small delay between cities
+            time.sleep(2)
 
         try:
             browser.close()
@@ -893,7 +943,10 @@ def generate_leads(business_type, country, max_cities=30):
         df = current_run_df
 
     df.drop_duplicates(subset=["business_name", "spin"], inplace=True)
-    df.to_csv(raw_output, index=False)
+    # Atomic final save
+    _tmp = raw_output + ".tmp"
+    df.to_csv(_tmp, index=False)
+    os.replace(_tmp, raw_output)
 
     # Clear progress file on success
     if os.path.exists(progress_file):

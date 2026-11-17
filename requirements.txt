@@ -1,6 +1,20 @@
-pandas
-requests
-beautifulsoup4
-playwright
-pymongo
-urllib3
+# Core Framework
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+jinja2>=3.1.4
+python-multipart>=0.0.9
+
+# Data Processing
+pandas>=2.2.0
+numpy>=1.26.0
+openpyxl>=3.1.0
+
+# Scraping Engine
+playwright>=1.44.0
+beautifulsoup4>=4.12.0
+lxml>=5.2.0
+requests>=2.32.0
+urllib3>=2.2.0
+
+# Environment
+python-dotenv>=1.0.0

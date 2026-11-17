@@ -1,6 +1,44 @@
+# ---- Python ----
 __pycache__/
 *.pyc
-.vscode/
-logs/
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# ---- Virtual Environments ----
+.venv/
+venv/
+env/
+
+# ---- Secrets & Config ----
+.env
+config/google_cookies.json
+
+# ---- Output / Data Files ----
 output/
-.env 
+dashboard/output/
+lead_backups/
+*.tmp
+LEADS.csv
+
+# ---- Database ----
+database/auth_database.db
+*.db
+*.sqlite
+
+# ---- Logs ----
+logs/
+
+# ---- IDE ----
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
