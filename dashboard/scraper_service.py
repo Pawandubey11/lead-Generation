@@ -190,6 +190,14 @@ def _progress_callback(event_type: str, data: dict):
             _add_log(data.get("message", ""))
 
 
+def build_target_location(custom_cities: list[str], country: Optional[str]) -> str:
+    city_location = ", ".join(custom_cities) if custom_cities else "Unknown"
+    country_name = (country or "").strip()
+    if country_name and country_name.lower() not in city_location.lower():
+        return f"{city_location}, {country_name}"
+    return city_location
+
+
 def _update_last_history_entry():
     """Update the status of the currently running or last run history entry."""
     with _lock:
@@ -238,7 +246,7 @@ def _scrape_worker(business_type: str, scope: str, country: Optional[str], citie
                 custom_cities = [c.strip() for c in cities_str.split(",") if c.strip()]
             elif country:
                 custom_cities = [c.strip() for c in country.split(",") if c.strip()]
-            target_location = ", ".join(custom_cities) if custom_cities else "Unknown"
+            target_location = build_target_location(custom_cities, country)
 
         with _lock:
             _status["state"] = "running"

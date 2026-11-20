@@ -115,6 +115,22 @@ class SecurityAndScrapeRequestTests(unittest.TestCase):
                 max_leads_per_city=201,
             )
 
+    def test_city_country_location_label(self):
+        from dashboard.scraper_service import build_target_location
+
+        self.assertEqual(
+            build_target_location(["Bihar"], "india"),
+            "Bihar, india",
+        )
+        self.assertEqual(
+            build_target_location(["London"], "United Kingdom"),
+            "London, United Kingdom",
+        )
+        self.assertEqual(
+            build_target_location(["Delhi"], "Delhi"),
+            "Delhi",
+        )
+
     def test_safe_website_url_rule(self):
         def is_safe(raw_url):
             from urllib.parse import urlparse

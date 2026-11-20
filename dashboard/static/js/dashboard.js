@@ -171,6 +171,21 @@
     }
   }
 
+  async function refreshLeadsWithoutToast() {
+    try {
+      const res = await fetch('/api/leads?page=1&page_size=2000', {
+        cache: 'no-store',
+        headers: { 'Cache-Control': 'no-cache' },
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      state.leads = data.data || data.leads || [];
+      applyLocalFilter();
+    } catch (err) {
+      console.error('Error refreshing live leads:', err);
+    }
+  }
+
   // --- Local Filtering & Verification Check ---
   function isLeadVerified(lead) {
     if (!lead) return false;
@@ -570,7 +585,7 @@
         $('progress-leads-count').textContent = (s.total_leads_found || 0).toLocaleString();
         $('progress-pct-text').textContent = `${s.progress_pct || 0}%`;
         $('progress-fill-bar').style.width = `${s.progress_pct || 0}%`;
-        await loadInitialLeads();
+        await refreshLeadsWithoutToast();
       } else {
         if (state.scraper.isRunning) {
           state.scraper.isRunning = false;
