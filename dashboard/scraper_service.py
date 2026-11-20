@@ -66,6 +66,7 @@ _status: Dict[str, Any] = {
     "total_businesses": 0,
     "cities_completed": 0,
     "total_leads_found": 0,
+    "baseline_leads": 0,
     "progress_pct": 0,
     "logs": [],
     "error": None,
@@ -74,6 +75,18 @@ _status: Dict[str, Any] = {
 }
 
 _log_buffer: deque = deque(maxlen=MAX_LOG_LINES)
+
+
+def _count_live_leads() -> int:
+    path = os.path.join(PROJECT_ROOT, "output", "local_business_leads.csv")
+    if not os.path.isfile(path):
+        return 0
+    try:
+        import pandas as pd
+        df = pd.read_csv(path)
+        return len(df)
+    except Exception:
+        return 0
 
 
 def _reset_status():
@@ -91,6 +104,7 @@ def _reset_status():
         "total_businesses": 0,
         "cities_completed": 0,
         "total_leads_found": 0,
+        "baseline_leads": 0,
         "progress_pct": 0,
         "logs": [],
         "error": None,
@@ -140,7 +154,8 @@ def _progress_callback(event_type: str, data: dict):
 
         elif event_type == "city_done":
             _status["cities_completed"] = data.get("city_index", 0)
-            _status["total_leads_found"] = data.get("total_leads", 0)
+            absolute_total = data.get("total_leads", 0)
+            _status["total_leads_found"] = max(0, absolute_total - _status["baseline_leads"])
             city_leads = data.get("city_leads_count", 0)
             _add_log(f"✅ Completed {data.get('city', '?')} — {city_leads} leads found (total: {data.get('total_leads', 0)})")
 
@@ -156,8 +171,31 @@ def _progress_callback(event_type: str, data: dict):
             _status["current_business_index"] = data.get("business_index", 0)
             _status["total_businesses"] = data.get("total_businesses", 0)
 
+        elif event_type == "lead_extracted":
+            _status["current_business_index"] = data.get("business_index", 0)
+            _status["total_businesses"] = data.get("total_businesses", 0)
+            absolute_total = data.get("total_leads", 0)
+            _status["total_leads_found"] = max(0, absolute_total - _status["baseline_leads"])
+            city_index = max(_status["current_city_index"], 1)
+            total_cities = max(_status["total_cities"], 1)
+            business_index = data.get("business_index", 0)
+            total_businesses = max(data.get("total_businesses", 1), 1)
+            completed_before_city = city_index - 1
+            within_city = business_index / total_businesses
+            overall = ((completed_before_city + within_city) / total_cities) * 100
+            _status["progress_pct"] = min(int(overall), 99)
+            _add_log(f"✨ Lead extracted: {_status['total_leads_found']} total")
+
         elif event_type == "log":
             _add_log(data.get("message", ""))
+
+
+def build_target_location(custom_cities: list[str], country: Optional[str]) -> str:
+    city_location = ", ".join(custom_cities) if custom_cities else "Unknown"
+    country_name = (country or "").strip()
+    if country_name and country_name.lower() not in city_location.lower():
+        return f"{city_location}, {country_name}"
+    return city_location
 
 
 def _update_last_history_entry():
@@ -181,7 +219,7 @@ def _update_last_history_entry():
 # Worker thread
 # ---------------------------------------------------------------------------
 
-def _scrape_worker(business_type: str, scope: str, country: Optional[str], cities_str: Optional[str], max_cities: int):
+def _scrape_worker(business_type: str, scope: str, country: Optional[str], cities_str: Optional[str], max_cities: int, max_leads_per_city: int):
     """Runs in a background thread. Calls generate_leads() and lead_cleaner."""
     try:
         from scrapers.crawler import (
@@ -208,7 +246,7 @@ def _scrape_worker(business_type: str, scope: str, country: Optional[str], citie
                 custom_cities = [c.strip() for c in cities_str.split(",") if c.strip()]
             elif country:
                 custom_cities = [c.strip() for c in country.split(",") if c.strip()]
-            target_location = ", ".join(custom_cities) if custom_cities else "Unknown"
+            target_location = build_target_location(custom_cities, country)
 
         with _lock:
             _status["state"] = "running"
@@ -218,7 +256,13 @@ def _scrape_worker(business_type: str, scope: str, country: Optional[str], citie
                 _add_log(f"🚀 Starting scrape: {business_type} in {country} (max {max_cities} cities)")
 
         # ---- Run the crawler ----
-        df = generate_leads(business_type, target_location, max_cities=max_cities, custom_cities=custom_cities)
+        df = generate_leads(
+            business_type,
+            target_location,
+            max_cities=max_cities,
+            custom_cities=custom_cities,
+            max_leads_per_city=max_leads_per_city,
+        )
 
         # ---- Run lead cleaner (same as main.py does) ----
         with _lock:
@@ -248,13 +292,35 @@ def _scrape_worker(business_type: str, scope: str, country: Optional[str], citie
             total = len(df) if df is not None else 0
             _status["state"] = "completed"
             _status["progress_pct"] = 100
-            _status["total_leads_found"] = total
+            _status["total_leads_found"] = max(0, total - _status["baseline_leads"])
             _add_log(f"🎉 Scraping complete! Total leads: {total}")
 
     except ScrapeCancelled:
         with _lock:
+            _status["state"] = "stopping"
+            _add_log("⛔ Scrape stopped — preserving partial leads…")
+
+        cleaner_path = os.path.join(PROJECT_ROOT, "lead_cleaner.py")
+        try:
+            result = subprocess.run(
+                [sys.executable, cleaner_path],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode == 0:
+                _add_log("✅ Partial leads saved and cleaned")
+            elif result.returncode == 2:
+                _add_log("ℹ️ Stop completed — no leads available to clean")
+            else:
+                _add_log(f"⚠️ Partial cleaner exited with code {result.returncode}")
+        except Exception as cleaner_error:
+            _add_log(f"⚠️ Could not clean partial leads: {cleaner_error}")
+
+        with _lock:
             _status["state"] = "completed"
-            _add_log("⛔ Scrape was cancelled by user")
+            _status["progress_pct"] = max(_status["progress_pct"], 1)
 
     except Exception as e:
         with _lock:
@@ -277,7 +343,7 @@ def _scrape_worker(business_type: str, scope: str, country: Optional[str], citie
 # Public API
 # ---------------------------------------------------------------------------
 
-def start_scrape(business_type: str, scope: str = "country", country: Optional[str] = None, cities: Optional[str] = None, max_cities: int = 30) -> Dict[str, Any]:
+def start_scrape(business_type: str, scope: str = "country", country: Optional[str] = None, cities: Optional[str] = None, max_cities: int = 30, max_leads_per_city: int = 20) -> Dict[str, Any]:
     """
     Start a scrape job in the background.
     Returns {"ok": True, "status": "started"} or {"ok": False, "status": "error", "error": "..."}.
@@ -319,6 +385,7 @@ def start_scrape(business_type: str, scope: str = "country", country: Optional[s
         _status["total_cities"] = total_c
         _status["current_city"] = (cities.split(",")[0].strip() if scope == "city" and cities else country) or "Starting..."
         _status["started_at"] = time.time()
+        _status["baseline_leads"] = _count_live_leads()
         _add_log(f"🚀 Initializing scraper for '{business_type}' in {location_label}...")
 
         timestamp_str = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -338,9 +405,11 @@ def start_scrape(business_type: str, scope: str = "country", country: Optional[s
             "spin": spin_str,
         })
 
+    max_leads_per_city = max(1, min(int(max_leads_per_city), 200))
+
     _worker_thread = threading.Thread(
         target=_scrape_worker,
-        args=(business_type, scope, country, cities, max_cities),
+        args=(business_type, scope, country, cities, max_cities, max_leads_per_city),
         daemon=True,
         name="scraper-worker",
     )

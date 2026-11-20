@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="820" viewBox="0 0 1400 820">
+  <rect width="1400" height="820" rx="24" fill="#07111f"/>
+  <text x="700" y="68" fill="#f8fafc" text-anchor="middle" font-family="Segoe UI, Arial" font-size="38" font-weight="700">LeadPulse - Lead Generation System</text>
+  <text x="700" y="105" fill="#94a3b8" text-anchor="middle" font-family="Segoe UI, Arial" font-size="20">Live discovery, extraction, storage, filtering, export and delivery</text>
+
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L12,6 L0,12 z" fill="#38bdf8"/>
+    </marker>
+  </defs>
+
+  <g font-family="Segoe UI, Arial">
+    <rect x="70" y="170" width="250" height="150" rx="18" fill="#10233d" stroke="#38bdf8" stroke-width="3"/>
+    <text x="195" y="215" fill="#e2e8f0" text-anchor="middle" font-size="24" font-weight="700">Team / User</text>
+    <text x="195" y="255" fill="#94a3b8" text-anchor="middle" font-size="17">Dashboard browser</text>
+    <text x="195" y="284" fill="#94a3b8" text-anchor="middle" font-size="17">Filters · Stops · Exports</text>
+
+    <rect x="410" y="170" width="280" height="150" rx="18" fill="#10233d" stroke="#22d3ee" stroke-width="3"/>
+    <text x="550" y="215" fill="#e2e8f0" text-anchor="middle" font-size="24" font-weight="700">FastAPI Dashboard</text>
+    <text x="550" y="255" fill="#94a3b8" text-anchor="middle" font-size="17">REST API and UI</text>
+    <text x="550" y="284" fill="#94a3b8" text-anchor="middle" font-size="17">Live status every 1 second</text>
+
+    <rect x="780" y="170" width="250" height="150" rx="18" fill="#10233d" stroke="#2dd4bf" stroke-width="3"/>
+    <text x="905" y="215" fill="#e2e8f0" text-anchor="middle" font-size="24" font-weight="700">Scraper Service</text>
+    <text x="905" y="255" fill="#94a3b8" text-anchor="middle" font-size="17">Background worker</text>
+    <text x="905" y="284" fill="#94a3b8" text-anchor="middle" font-size="17">Start · Stop · Progress</text>
+
+    <rect x="1120" y="170" width="210" height="150" rx="18" fill="#10233d" stroke="#34d399" stroke-width="3"/>
+    <text x="1225" y="215" fill="#e2e8f0" text-anchor="middle" font-size="24" font-weight="700">Crawler</text>
+    <text x="1225" y="255" fill="#94a3b8" text-anchor="middle" font-size="17">Playwright</text>
+    <text x="1225" y="284" fill="#94a3b8" text-anchor="middle" font-size="17">Google Maps</text>
+
+    <rect x="1120" y="410" width="210" height="150" rx="18" fill="#1a2a3c" stroke="#a78bfa" stroke-width="3"/>
+    <text x="1225" y="455" fill="#e2e8f0" text-anchor="middle" font-size="24" font-weight="700">Individual Lead</text>
+    <text x="1225" y="495" fill="#94a3b8" text-anchor="middle" font-size="17">Name · Phone · Website</text>
+    <text x="1225" y="524" fill="#94a3b8" text-anchor="middle" font-size="17">Source URL · Timestamp</text>
+
+    <rect x="780" y="410" width="250" height="150" rx="18" fill="#1a2a3c" stroke="#60a5fa" stroke-width="3"/>
+    <text x="905" y="455" fill="#e2e8f0" text-anchor="middle" font-size="24" font-weight="700">Live Raw CSV</text>
+    <text x="905" y="495" fill="#94a3b8" text-anchor="middle" font-size="17">Atomic save per listing</text>
+    <text x="905" y="524" fill="#94a3b8" text-anchor="middle" font-size="17">Partial results are retained</text>
+
+    <rect x="410" y="410" width="280" height="150" rx="18" fill="#1a2a3c" stroke="#818cf8" stroke-width="3"/>
+    <text x="550" y="455" fill="#e2e8f0" text-anchor="middle" font-size="24" font-weight="700">Lead Cleaner</text>
+    <text x="550" y="495" fill="#94a3b8" text-anchor="middle" font-size="17">Deduplicate · Score</text>
+    <text x="550" y="524" fill="#94a3b8" text-anchor="middle" font-size="17">Verify · Feature-engineer</text>
+
+    <rect x="70" y="410" width="250" height="150" rx="18" fill="#1a2a3c" stroke="#f472b6" stroke-width="3"/>
+    <text x="195" y="455" fill="#e2e8f0" text-anchor="middle" font-size="24" font-weight="700">Dashboard Data</text>
+    <text x="195" y="495" fill="#94a3b8" text-anchor="middle" font-size="17">Filter · Search · View</text>
+    <text x="195" y="524" fill="#94a3b8" text-anchor="middle" font-size="17">CSV · Excel · CRM</text>
+
+    <rect x="410" y="650" width="280" height="110" rx="18" fill="#14212f" stroke="#10b981" stroke-width="3"/>
+    <text x="550" y="690" fill="#e2e8f0" text-anchor="middle" font-size="22" font-weight="700">Cleaned Datasets</text>
+    <text x="550" y="722" fill="#94a3b8" text-anchor="middle" font-size="16">final_ai_leads.csv</text>
+    <text x="550" y="747" fill="#94a3b8" text-anchor="middle" font-size="16">verified_leads_export.csv</text>
+
+    <rect x="780" y="650" width="250" height="110" rx="18" fill="#14212f" stroke="#f59e0b" stroke-width="3"/>
+    <text x="905" y="690" fill="#e2e8f0" text-anchor="middle" font-size="22" font-weight="700">Optional Delivery</text>
+    <text x="905" y="722" fill="#94a3b8" text-anchor="middle" font-size="16">n8n webhook</text>
+    <text x="905" y="747" fill="#94a3b8" text-anchor="middle" font-size="16">CRM-ready export</text>
+
+    <rect x="1120" y="650" width="210" height="110" rx="18" fill="#14212f" stroke="#64748b" stroke-width="3"/>
+    <text x="1225" y="690" fill="#e2e8f0" text-anchor="middle" font-size="22" font-weight="700">Authentication</text>
+    <text x="1225" y="722" fill="#94a3b8" text-anchor="middle" font-size="16">SQLite users</text>
+    <text x="1225" y="747" fill="#94a3b8" text-anchor="middle" font-size="16">Sessions · Settings</text>
+
+    <line x1="320" y1="245" x2="410" y2="245" stroke="#38bdf8" stroke-width="4" marker-end="url(#arrow)"/>
+    <line x1="690" y1="245" x2="780" y2="245" stroke="#38bdf8" stroke-width="4" marker-end="url(#arrow)"/>
+    <line x1="1030" y1="245" x2="1120" y2="245" stroke="#38bdf8" stroke-width="4" marker-end="url(#arrow)"/>
+    <line x1="1225" y1="320" x2="1225" y2="410" stroke="#38bdf8" stroke-width="4" marker-end="url(#arrow)"/>
+    <line x1="1120" y1="485" x2="1030" y2="485" stroke="#38bdf8" stroke-width="4" marker-end="url(#arrow)"/>
+    <line x1="780" y1="485" x2="690" y2="485" stroke="#38bdf8" stroke-width="4" marker-end="url(#arrow)"/>
+    <line x1="410" y1="485" x2="320" y2="485" stroke="#38bdf8" stroke-width="4" marker-end="url(#arrow)"/>
+    <line x1="550" y1="560" x2="550" y2="650" stroke="#38bdf8" stroke-width="4" marker-end="url(#arrow)"/>
+    <line x1="690" y1="705" x2="780" y2="705" stroke="#38bdf8" stroke-width="4" marker-end="url(#arrow)"/>
+  </g>
+</svg>

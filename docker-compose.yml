@@ -1,6 +1,33 @@
 version: "3.8"
 
 services:
+  leadgen:
+    build: .
+    image: leadgen-scraper:latest
+    container_name: leadgen-scraper
+    shm_size: '2gb'
+    stdin_open: true
+    tty: true
+
+    volumes:
+      - ./output:/app/output
+      - ./config:/app/config:ro
+
+    env_file:
+      - .env
+
+    environment:
+      - LEADPULSE_DEV_MODE=true
+      - MAX_BIZ_PER_CITY=20
+      - MAX_LOCALITIES=30
+      - MAX_BIZ_PER_LOCALITY=20
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
   dashboard:
     build:
       context: .
@@ -22,9 +49,16 @@ services:
       - LEADS_CSV_PATH=/app/output/final_ai_leads.csv
       - GOOGLE_COOKIES_PATH=/app/config/google_cookies.json
       - LEADPULSE_DEV_MODE=true
+      - MAX_LOCALITIES=30
+      - MAX_BIZ_PER_LOCALITY=20
+      # AI Business Intelligence — set AI_PROVIDER and the matching API key
+      - AI_PROVIDER=mock
+      - AI_MODEL=gpt-4o-mini
+      - OPENAI_API_KEY=
+      - GEMINI_API_KEY=
+      - ANTHROPIC_API_KEY=
 
     restart: unless-stopped
-
     shm_size: '512m'
 
     healthcheck:
@@ -33,32 +67,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 15s
-
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "5"
-
-  leadgen:
-    build: .
-    image: leadgen-scraper:latest
-    container_name: leadgen-scraper
-
-    shm_size: '512m'
-    stdin_open: true
-    tty: true
-
-    volumes:
-      - ./output:/app/output
-      - ./config:/app/config:ro
-
-    env_file:
-      - .env
-
-    environment:
-      - LEADPULSE_DEV_MODE=true
-      - MAX_BIZ_PER_CITY=20
 
     logging:
       driver: "json-file"

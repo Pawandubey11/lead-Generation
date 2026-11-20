@@ -39,6 +39,7 @@ CSV_PATH = os.environ.get(
     "LEADS_CSV_PATH",
     os.path.join(PROJECT_ROOT, "output", "final_ai_leads.csv"),
 )
+LIVE_CSV_PATH = os.path.join(PROJECT_ROOT, "output", "local_business_leads.csv")
 
 NO_DATA_MESSAGE = "No leads generated yet."
 
@@ -64,6 +65,8 @@ RAW_COLUMNS = [
     "Priority",
     "spin",
     "scraped_at",
+    "source_name",
+    "source_url",
 ]
 
 RENAME_MAP = {
@@ -91,6 +94,8 @@ STRING_FIELDS = [
     "priority",
     "spin",
     "scraped_at",
+    "source_name",
+    "source_url",
 ]
 
 TABLE_FIELDS = [
@@ -107,6 +112,8 @@ TABLE_FIELDS = [
     "contact_completeness",
     "spin",
     "scraped_at",
+    "source_name",
+    "source_url",
 ]
 
 DETAIL_EXTRA_FIELDS = ["address", "city", "has_website", "has_email", "has_social_media"]
@@ -139,15 +146,18 @@ _cached_mtime: float = 0.0
 
 
 def csv_exists() -> bool:
-    return os.path.isfile(CSV_PATH)
+    return os.path.isfile(CSV_PATH) or os.path.isfile(LIVE_CSV_PATH)
 
 
 def _csv_mtime() -> float:
-    """Return the CSV file modification time, or 0 if file doesn't exist."""
-    try:
-        return os.path.getmtime(CSV_PATH)
-    except OSError:
-        return 0.0
+    """Return the newest dashboard CSV modification time."""
+    mtimes = []
+    for path in (CSV_PATH, LIVE_CSV_PATH):
+        try:
+            mtimes.append(os.path.getmtime(path))
+        except OSError:
+            pass
+    return max(mtimes) if mtimes else 0.0
 
 
 def load_leads() -> Optional[pd.DataFrame]:
@@ -169,7 +179,24 @@ def load_leads() -> Optional[pd.DataFrame]:
             _cached_mtime = 0.0
         return None
 
-    current_mtime = _csv_mtime()
+    live_mtime = 0.0
+    try:
+        live_mtime = os.path.getmtime(LIVE_CSV_PATH)
+    except OSError:
+        pass
+
+    final_mtime = 0.0
+    try:
+        final_mtime = os.path.getmtime(CSV_PATH)
+    except OSError:
+        pass
+
+    # The raw live file is the authoritative live dataset. It is written after
+    # every extracted lead, while final is only rewritten after cleaning.
+    # Prefer raw whenever it exists so filesystem/restore timestamps cannot hide
+    # leads that have already been extracted.
+    source_path = LIVE_CSV_PATH if os.path.isfile(LIVE_CSV_PATH) else CSV_PATH
+    current_mtime = max(live_mtime, final_mtime)
 
     # Fast path: return cached copy if file hasn't changed
     with _cache_lock:
@@ -178,7 +205,7 @@ def load_leads() -> Optional[pd.DataFrame]:
 
     # Slow path: re-read from disk
     try:
-        df = pd.read_csv(CSV_PATH)
+        df = pd.read_csv(source_path)
     except (pd.errors.EmptyDataError, FileNotFoundError):
         with _cache_lock:
             _cached_df = None
@@ -213,6 +240,25 @@ def load_leads() -> Optional[pd.DataFrame]:
     df["contact_completeness"] = pd.to_numeric(
         df["contact_completeness"], errors="coerce"
     ).fillna(0)
+
+    # Live/raw CSVs do not contain the cleaner's derived columns. Compute them
+    # defensively so newly extracted leads appear immediately in the dashboard.
+    has_web = df["website"].fillna("").astype(str).str.strip() != ""
+    has_em = df["email"].fillna("").astype(str).str.strip() != ""
+    has_ig = df["instagram"].fillna("").astype(str).str.strip() != ""
+    has_fb = df["facebook"].fillna("").astype(str).str.strip() != ""
+    has_li = df["linkedin"].fillna("").astype(str).str.strip() != ""
+    has_phone = df["phone"].fillna("").astype(str).str.strip() != ""
+    has_social = has_ig | has_fb | has_li
+
+    df["has_website"] = np.where(has_web, "Yes", "No")
+    df["has_email"] = np.where(has_em, "Yes", "No")
+    df["has_social_media"] = np.where(has_social, "Yes", "No")
+    filled = has_phone.astype(int) + has_web.astype(int) + has_em.astype(int) + has_ig.astype(int) + has_fb.astype(int) + has_li.astype(int)
+    df["contact_completeness"] = (filled / 6.0 * 100).round(2)
+    score = has_phone.astype(int) * 20 + has_web.astype(int) * 20 + has_em.astype(int) * 40 + has_ig.astype(int) * 10 + has_fb.astype(int) * 5 + has_li.astype(int) * 5
+    df["lead_score"] = score
+    df["priority"] = np.select([score >= 70, score >= 40], ["Hot", "Warm"], default="Cold")
 
     # Normalize priority casing / unknowns
     df["priority"] = df["priority"].where(df["priority"].isin(VALID_PRIORITIES), "Cold")
@@ -957,6 +1003,8 @@ CUSTOM_FIELD_LABEL_MAP = {
     "linkedin": "LinkedIn",
     "spin": "Search Query / Niche",
     "scraped_at": "Extracted Date",
+    "source_name": "Data Source",
+    "source_url": "Source URL",
 }
 
 def export_custom_dataset(

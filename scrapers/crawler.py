@@ -550,7 +550,13 @@ def extract_socials_and_email(url):
                 "Chrome/120.0.0.0 Safari/537.36"
             )
         }
-        response = requests.get(url, headers=headers, timeout=15, verify=False)
+        response = requests.get(
+            url,
+            headers=headers,
+            timeout=(3, 8),
+            verify=False,
+            allow_redirects=True,
+        )
         html = response.text
         soup = BeautifulSoup(html, "html.parser")
 
@@ -613,17 +619,17 @@ def scrape_business(link, p, browser, page):
                 browser = launch_browser(p)
                 page = new_page(browser)
 
-            page.goto(link, wait_until="domcontentloaded", timeout=45000)
-            page.wait_for_timeout(3000)
+            page.goto(link, wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(800)
 
             # Dismiss consent wall — may redirect then land back on the business page
             dismissed = dismiss_consent_wall(page)
             if dismissed:
-                page.wait_for_timeout(2000)
+                page.wait_for_timeout(800)
 
             # Wait for details panel h1 element to load
             try:
-                page.wait_for_selector("h1", timeout=12000)
+                page.wait_for_selector("h1", timeout=4000)
             except Exception:
                 pass
 
@@ -639,7 +645,7 @@ def scrape_business(link, p, browser, page):
                 return None, browser, page
 
             try:
-                business_name = clean_text(page.locator("h1").first.inner_text(timeout=8000))
+                business_name = clean_text(page.locator("h1").first.inner_text(timeout=3000))
             except:
                 business_name = ""
 
@@ -656,17 +662,17 @@ def scrape_business(link, p, browser, page):
                 return None, browser, page
 
             try:
-                phone = clean_text(page.locator('button[data-item-id*="phone"]').first.inner_text(timeout=8000))
+                phone = clean_text(page.locator('button[data-item-id*="phone"]').first.inner_text(timeout=3000))
             except:
                 phone = ""
 
             try:
-                address = clean_text(page.locator('button[data-item-id="address"]').first.inner_text(timeout=8000))
+                address = clean_text(page.locator('button[data-item-id="address"]').first.inner_text(timeout=3000))
             except:
                 address = ""
 
             try:
-                website = page.locator('a[data-item-id="authority"]').first.get_attribute("href", timeout=8000)
+                website = page.locator('a[data-item-id="authority"]').first.get_attribute("href", timeout=3000)
             except:
                 website = ""
 
@@ -680,11 +686,15 @@ def scrape_business(link, p, browser, page):
                 "instagram": socials["instagram"],
                 "facebook": socials["facebook"],
                 "linkedin": socials["linkedin"],
-                "email": socials["email"]
+                "email": socials["email"],
+                "source_name": "Google Maps",
+                "source_url": link,
             }
 
             return lead, browser, page
 
+        except ScrapeCancelled:
+            raise
         except Exception as e:
             print(f"  Attempt {attempt+1} failed: {str(e)[:80]}")
             try:
@@ -693,7 +703,7 @@ def scrape_business(link, p, browser, page):
                 pass
             browser = launch_browser(p)
             page = new_page(browser)
-            time.sleep(3)
+            time.sleep(1)
 
     return None, browser, page
 
@@ -702,7 +712,7 @@ def scrape_business(link, p, browser, page):
 # SCRAPE ONE CITY
 # ============================================
 
-def scrape_city(business_type, city, p, browser, page):
+def scrape_city(business_type, city, p, browser, page, partial_save_callback=None, max_leads_per_city=20):
     city_leads = []
     search_query = f"{business_type} in {city}"
 
@@ -725,13 +735,13 @@ def scrape_city(business_type, city, p, browser, page):
             browser = launch_browser(p)
             page = new_page(browser)
 
-        page.goto(search_url, wait_until="domcontentloaded", timeout=120000)
-        time.sleep(5)
+        page.goto(search_url, wait_until="domcontentloaded", timeout=60000)
+        time.sleep(1)
 
         # ---- Handle Google's consent wall ----
         dismiss_consent_wall(page)
 
-        time.sleep(3)
+        time.sleep(1)
         
         # Robust feed selector detection
         scrollable_div = None
@@ -745,7 +755,7 @@ def scrape_city(business_type, city, p, browser, page):
 
         if not scrollable_div:
             try:
-                page.wait_for_selector('div[role="feed"], a[href*="/place/"]', timeout=15000)
+                page.wait_for_selector('div[role="feed"], a[href*="/place/"]', timeout=8000)
                 if page.locator('div[role="feed"]').count() > 0:
                     scrollable_div = page.locator('div[role="feed"]').first
                 else:
@@ -765,12 +775,12 @@ def scrape_city(business_type, city, p, browser, page):
     same_count = 0
 
     is_quick = os.environ.get("QUICK_SCRAPE") == "true"
-    max_scrolls = 2 if is_quick else 80
+    max_scrolls = 2 if is_quick else 30
 
     for i in range(max_scrolls):
         try:
             scrollable_div.evaluate("(el) => el.scrollTop = el.scrollHeight")
-            time.sleep(2 if is_quick else 3)
+            time.sleep(1 if is_quick else 2)
             cards = scrollable_div.locator('a[href*="/place/"]').all()
             current_count = len(cards)
             print(f"  Scroll {i+1} | Businesses: {current_count}")
@@ -782,7 +792,7 @@ def scrape_city(business_type, city, p, browser, page):
 
             previous_count = current_count
 
-            if same_count >= 6:
+            if same_count >= 4:
                 break
         except:
             break
@@ -804,9 +814,13 @@ def scrape_city(business_type, city, p, browser, page):
 
     max_biz_env = os.environ.get("MAX_BIZ_PER_CITY")
     if max_biz_env and max_biz_env.isdigit():
-        business_links = business_links[:int(max_biz_env)]
-    elif is_quick:
-        business_links = business_links[:3]
+        selected_limit = int(max_biz_env)
+    elif is_quick and max_leads_per_city <= 20:
+        selected_limit = 3
+    else:
+        selected_limit = max_leads_per_city
+    selected_limit = max(1, min(selected_limit, 200))
+    business_links = business_links[:selected_limit]
 
     print(f"\n  Found {len(business_links)} businesses in {city}")
     _notify("businesses_found", {"city": city, "total_businesses": len(business_links)})
@@ -826,6 +840,8 @@ def scrape_city(business_type, city, p, browser, page):
         if lead and any([lead["business_name"], lead["phone"], lead["website"], lead["address"]]):
             lead["city"] = city
             city_leads.append(lead)
+            if partial_save_callback:
+                partial_save_callback(city_leads, idx + 1, len(business_links))
 
     print(f"\n  Leads collected from {city}: {len(city_leads)}")
     return city_leads, browser, page
@@ -835,7 +851,7 @@ def scrape_city(business_type, city, p, browser, page):
 # MAIN GENERATE LEADS — COUNTRY MODE
 # ============================================
 
-def generate_leads(business_type, country, max_cities=30, custom_cities=None):
+def generate_leads(business_type, country, max_cities=30, custom_cities=None, max_leads_per_city=20):
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     if custom_cities:
@@ -880,55 +896,89 @@ def generate_leads(business_type, country, max_cities=30, custom_cities=None):
         browser = launch_browser(p)
         page = new_page(browser)
 
-        for city_idx, city in enumerate(remaining_cities):
-            # Allow dashboard to cancel between cities
-            _notify("city_start", {"city": city, "city_index": city_idx + 1, "total_cities": len(remaining_cities)})
-            print(f"\n[City {city_idx+1}/{len(remaining_cities)}] {city}")
-
-            city_leads, browser, page = scrape_city(
-                business_type, city, p, browser, page
-            )
-
-            scrape_time = time.strftime("%Y-%m-%d %H:%M:%S")  # Per-city timestamp (DQ-006)
-            for lead in city_leads:
-                lead["spin"] = friendly_spin
-                lead["scraped_at"] = scrape_time  # Time of THIS city's scrape
-
-            all_leads.extend(city_leads)
-
-            # Mark city as done
-            with open(progress_file, "a") as f:
-                f.write(city + "\n")
-
-            # Save after every city
-            current_run_df = pd.DataFrame(all_leads)
-            if os.path.exists(raw_output):
-                try:
-                    historical_df = pd.read_csv(raw_output)
-                    historical_df = historical_df[historical_df["spin"] != friendly_spin]
-                    df_temp = pd.concat([historical_df, current_run_df], ignore_index=True)
-                except Exception:
-                    df_temp = current_run_df
-            else:
-                df_temp = current_run_df
-
-            df_temp.drop_duplicates(subset=["business_name", "spin"], inplace=True)
-            # Atomic write: write to temp file then rename — prevents dashboard
-            # reading a partially-written CSV (INFRA-003)
-            _tmp = raw_output + ".tmp"
-            df_temp.to_csv(_tmp, index=False)
-            os.replace(_tmp, raw_output)
-
-            print(f"\n  Progress saved — Total leads so far: {len(df_temp)}")
-            _notify("city_done", {"city": city, "city_index": city_idx + 1, "total_cities": len(remaining_cities), "city_leads_count": len(city_leads), "total_leads": len(df_temp)})
-
-            # Small delay between cities
-            time.sleep(2)
-
         try:
-            browser.close()
-        except:
-            pass
+            for city_idx, city in enumerate(remaining_cities):
+                _notify("city_start", {"city": city, "city_index": city_idx + 1, "total_cities": len(remaining_cities)})
+                print(f"\n[City {city_idx+1}/{len(remaining_cities)}] {city}")
+
+                def save_partial_city(city_leads, business_index=None, total_businesses=None):
+                    scrape_time = time.strftime("%Y-%m-%d %H:%M:%S")
+                    partial_rows = []
+                    for lead in city_leads:
+                        row = lead.copy()
+                        row["spin"] = friendly_spin
+                        row["scraped_at"] = scrape_time
+                        row["city"] = city
+                        partial_rows.append(row)
+
+                    combined = all_leads + partial_rows
+                    current_run_df = pd.DataFrame(combined)
+                    if os.path.exists(raw_output):
+                        try:
+                            historical_df = pd.read_csv(raw_output)
+                            historical_df = historical_df[historical_df["spin"] != friendly_spin]
+                            df_temp = pd.concat([historical_df, current_run_df], ignore_index=True)
+                        except Exception:
+                            df_temp = current_run_df
+                    else:
+                        df_temp = current_run_df
+
+                    df_temp.drop_duplicates(subset=["business_name", "spin"], inplace=True)
+                    _tmp = raw_output + ".tmp"
+                    df_temp.to_csv(_tmp, index=False)
+                    os.replace(_tmp, raw_output)
+                    _notify("lead_extracted", {
+                        "city": city,
+                        "business_index": business_index or len(partial_rows),
+                        "total_businesses": total_businesses or len(partial_rows),
+                        "total_leads": len(df_temp),
+                    })
+                    _notify("log", {"message": f"💾 Saved partial lead: {len(partial_rows)} in {city}"})
+
+                city_leads, browser, page = scrape_city(
+                    business_type,
+                    city,
+                    p,
+                    browser,
+                    page,
+                    save_partial_city,
+                    max_leads_per_city,
+                )
+
+                scrape_time = time.strftime("%Y-%m-%d %H:%M:%S")
+                for lead in city_leads:
+                    lead["spin"] = friendly_spin
+                    lead["scraped_at"] = scrape_time
+
+                all_leads.extend(city_leads)
+
+                with open(progress_file, "a") as f:
+                    f.write(city + "\n")
+
+                current_run_df = pd.DataFrame(all_leads)
+                if os.path.exists(raw_output):
+                    try:
+                        historical_df = pd.read_csv(raw_output)
+                        historical_df = historical_df[historical_df["spin"] != friendly_spin]
+                        df_temp = pd.concat([historical_df, current_run_df], ignore_index=True)
+                    except Exception:
+                        df_temp = current_run_df
+                else:
+                    df_temp = current_run_df
+
+                df_temp.drop_duplicates(subset=["business_name", "spin"], inplace=True)
+                _tmp = raw_output + ".tmp"
+                df_temp.to_csv(_tmp, index=False)
+                os.replace(_tmp, raw_output)
+
+                print(f"\n  Progress saved — Total leads so far: {len(df_temp)}")
+                _notify("city_done", {"city": city, "city_index": city_idx + 1, "total_cities": len(remaining_cities), "city_leads_count": len(city_leads), "total_leads": len(df_temp)})
+                time.sleep(1)
+        finally:
+            try:
+                browser.close()
+            except Exception:
+                pass
 
     # Final save
     current_run_df = pd.DataFrame(all_leads)

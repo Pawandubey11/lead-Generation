@@ -69,6 +69,17 @@
       .replace(/"/g, '&quot;');
   }
 
+  function safeWebsiteUrl(rawUrl) {
+    if (!rawUrl) return '';
+    try {
+      const url = new URL(String(rawUrl), window.location.origin);
+      if (url.protocol !== 'https:' && url.protocol !== 'http:') return '';
+      return url.href;
+    } catch (err) {
+      return '';
+    }
+  }
+
   // --- Initialization ---
   async function init() {
     renderFieldChips();
@@ -157,6 +168,21 @@
     } catch (err) {
       console.error('Error loading leads:', err);
       showToast('Error fetching leads dataset.', false);
+    }
+  }
+
+  async function refreshLeadsWithoutToast() {
+    try {
+      const res = await fetch('/api/leads?page=1&page_size=2000', {
+        cache: 'no-store',
+        headers: { 'Cache-Control': 'no-cache' },
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      state.leads = data.data || data.leads || [];
+      applyLocalFilter();
+    } catch (err) {
+      console.error('Error refreshing live leads:', err);
     }
   }
 
@@ -299,8 +325,8 @@
           </span>
         </td>
         <td>
-          ${lead.website ? `
-            <a href="${escapeHtml(lead.website)}" target="_blank" rel="noopener" style="font-size:0.8rem;">
+          ${safeWebsiteUrl(lead.website) ? `
+            <a href="${escapeHtml(safeWebsiteUrl(lead.website))}" target="_blank" rel="noopener noreferrer" style="font-size:0.8rem;">
               Visit Website ↗
             </a>
           ` : '<span style="color:#64748B;">—</span>'}
@@ -449,6 +475,7 @@
     const industry = $('input-industry').value.trim();
     const location = $('input-location').value.trim();
     const maxCities = parseInt($('input-max-cities').value, 10) || 10;
+    const maxLeadsPerCity = parseInt($('input-max-leads-per-city')?.value, 10) || 20;
 
     if (!industry) {
       showToast('Please enter a target industry.', false);
@@ -466,9 +493,16 @@
     state.industry = industry;
 
     const commonCountries = ['germany', 'united states', 'usa', 'united kingdom', 'uk', 'india', 'canada', 'australia', 'france', 'uae'];
-    const isCountry = commonCountries.includes(location.toLowerCase());
+    const locationParts = location.split(',').map(part => part.trim()).filter(Boolean);
+    const isCountryCityPair = locationParts.length === 2;
+    const isCountry = !isCountryCityPair && commonCountries.includes(location.toLowerCase());
 
-    if (isCountry) {
+    if (isCountryCityPair) {
+      $('filter-city').value = locationParts[0];
+      state.city = locationParts[0];
+      $('filter-country').value = locationParts[1];
+      state.country = locationParts[1];
+    } else if (isCountry) {
       $('filter-country').value = location;
       state.country = location;
       $('filter-city').value = '';
@@ -485,9 +519,10 @@
     const payload = {
       business_type: industry,
       scope: isCountry ? 'country' : 'city',
-      country: isCountry ? location : null,
-      cities: isCountry ? null : location,
+      country: isCountry ? location : (isCountryCityPair ? locationParts[1] : null),
+      cities: isCountry ? null : (isCountryCityPair ? locationParts[0] : location),
       max_cities: maxCities,
+      max_leads_per_city: maxLeadsPerCity,
     };
 
     try {
@@ -550,6 +585,7 @@
         $('progress-leads-count').textContent = (s.total_leads_found || 0).toLocaleString();
         $('progress-pct-text').textContent = `${s.progress_pct || 0}%`;
         $('progress-fill-bar').style.width = `${s.progress_pct || 0}%`;
+        await refreshLeadsWithoutToast();
       } else {
         if (state.scraper.isRunning) {
           state.scraper.isRunning = false;
