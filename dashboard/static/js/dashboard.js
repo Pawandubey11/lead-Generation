@@ -69,6 +69,17 @@
       .replace(/"/g, '&quot;');
   }
 
+  function safeWebsiteUrl(rawUrl) {
+    if (!rawUrl) return '';
+    try {
+      const url = new URL(String(rawUrl), window.location.origin);
+      if (url.protocol !== 'https:' && url.protocol !== 'http:') return '';
+      return url.href;
+    } catch (err) {
+      return '';
+    }
+  }
+
   // --- Initialization ---
   async function init() {
     renderFieldChips();
@@ -157,6 +168,21 @@
     } catch (err) {
       console.error('Error loading leads:', err);
       showToast('Error fetching leads dataset.', false);
+    }
+  }
+
+  async function refreshLeadsWithoutToast() {
+    try {
+      const res = await fetch('/api/leads?page=1&page_size=2000', {
+        cache: 'no-store',
+        headers: { 'Cache-Control': 'no-cache' },
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      state.leads = data.data || data.leads || [];
+      applyLocalFilter();
+    } catch (err) {
+      console.error('Error refreshing live leads:', err);
     }
   }
 
@@ -299,8 +325,8 @@
           </span>
         </td>
         <td>
-          ${lead.website ? `
-            <a href="${escapeHtml(lead.website)}" target="_blank" rel="noopener" style="font-size:0.8rem;">
+          ${safeWebsiteUrl(lead.website) ? `
+            <a href="${escapeHtml(safeWebsiteUrl(lead.website))}" target="_blank" rel="noopener noreferrer" style="font-size:0.8rem;">
               Visit Website â†—
             </a>
           ` : '<span style="color:#64748B;">â€”</span>'}
@@ -449,6 +475,7 @@
     const industry = $('input-industry').value.trim();
     const location = $('input-location').value.trim();
     const maxCities = parseInt($('input-max-cities').value, 10) || 10;
+    const maxLeadsPerCity = parseInt($('input-max-leads-per-city')?.value, 10) || 20;
 
     if (!industry) {
       showToast('Please enter a target industry.', false);
@@ -466,9 +493,16 @@
     state.industry = industry;
 
     const commonCountries = ['germany', 'united states', 'usa', 'united kingdom', 'uk', 'india', 'canada', 'australia', 'france', 'uae'];
-    const isCountry = commonCountries.includes(location.toLowerCase());
+    const locationParts = location.split(',').map(part => part.trim()).filter(Boolean);
+    const isCountryCityPair = locationParts.length === 2;
+    const isCountry = !isCountryCityPair && commonCountries.includes(location.toLowerCase());
 
-    if (isCountry) {
+    if (isCountryCityPair) {
+      $('filter-city').value = locationParts[0];
+      state.city = locationParts[0];
+      $('filter-country').value = locationParts[1];
+      state.country = locationParts[1];
+    } else if (isCountry) {
       $('filter-country').value = location;
       state.country = location;
       $('filter-city').value = '';
@@ -485,9 +519,10 @@
     const payload = {
       business_type: industry,
       scope: isCountry ? 'country' : 'city',
-      country: isCountry ? location : null,
-      cities: isCountry ? null : location,
+      country: isCountry ? location : (isCountryCityPair ? locationParts[1] : null),
+      cities: isCountry ? null : (isCountryCityPair ? locationParts[0] : location),
       max_cities: maxCities,
+      max_leads_per_city: maxLeadsPerCity,
     };
 
     try {
@@ -550,6 +585,7 @@
         $('progress-leads-count').textContent = (s.total_leads_found || 0).toLocaleString();
         $('progress-pct-text').textContent = `${s.progress_pct || 0}%`;
         $('progress-fill-bar').style.width = `${s.progress_pct || 0}%`;
+        await refreshLeadsWithoutToast();
       } else {
         if (state.scraper.isRunning) {
           state.scraper.isRunning = false;
@@ -608,3 +644,276 @@
 
   document.addEventListener('DOMContentLoaded', init);
 })();
+
+// ================================================================
+// AI Business Intelligence — SystemaOps Opportunity Intelligence
+// ================================================================
+
+const AI = {
+  selectedNames: new Set(),
+  pollTimer: null,
+  currentReport: null,
+  currentTab: 'overview',
+  allLeads: [],
+};
+
+// ---- Initialisation ----
+async function initAIPanel() {
+  try {
+    const cfg = await fetch('/api/ai/config').then(r => r.json());
+    const badge = document.getElementById('ai-mode-badge');
+    if (badge) {
+      badge.textContent = cfg.mock_mode ? 'MOCK MODE' : cfg.provider.toUpperCase() + ' / ' + cfg.model;
+      badge.style.background = cfg.mock_mode ? '#4c1d95' : '#065f46';
+      badge.style.color = cfg.mock_mode ? '#c4b5fd' : '#6ee7b7';
+    }
+  } catch (e) { /* non-critical */ }
+  await refreshAILeadList();
+  startAIStatusPoll();
+}
+
+async function refreshAILeadList() {
+  try {
+    const data = await fetch('/api/leads?page=1&page_size=200').then(r => r.json());
+    AI.allLeads = data.leads || [];
+    renderAILeadRows();
+    document.getElementById('ai-stat-total').textContent = AI.selectedNames.size;
+  } catch (e) { console.warn('AI lead list refresh error', e); }
+}
+
+function renderAILeadRows() {
+  const container = document.getElementById('ai-lead-rows');
+  if (!container) return;
+  const reports = window._aiReports || {};
+  container.innerHTML = AI.allLeads.map((ld, i) => {
+    const name = ld.business_name || '';
+    const checked = AI.selectedNames.has(name);
+    const rep = reports[name];
+    let dotColor = '#4b5563';
+    let statusText = '';
+    if (rep) {
+      if (rep.research_status === 'completed') { dotColor = '#34d399'; statusText = '?'; }
+      else if (rep.research_status === 'failed') { dotColor = '#f87171'; statusText = '?'; }
+      else { dotColor = '#fbbf24'; statusText = '…'; }
+    }
+    return '<div class="ai-lead-row">' +
+      '<input type="checkbox" ' + (checked ? 'checked' : '') +
+        ' onchange="toggleAILead(\'' + name.replace(/'/g, "\\'") + '\', this.checked)">' +
+      '<span class="ai-status-dot" style="background:' + dotColor + '"></span>' +
+      '<span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + (name || 'Unknown') + '</span>' +
+      '<span style="font-size:0.7rem; color:#6b7280;">' + statusText + '</span>' +
+      (rep && rep.research_status === 'completed'
+        ? '<button class="ai-view-btn" onclick="viewAIReport(\'' + name.replace(/'/g, "\\'") + '\')">View ?</button>'
+        : '') +
+      '</div>';
+  }).join('');
+}
+
+function toggleAILead(name, checked) {
+  if (checked) AI.selectedNames.add(name);
+  else AI.selectedNames.delete(name);
+  document.getElementById('ai-stat-total').textContent = AI.selectedNames.size;
+}
+
+function aiSelectAll() {
+  AI.allLeads.forEach(ld => { if (ld.business_name) AI.selectedNames.add(ld.business_name); });
+  renderAILeadRows();
+  document.getElementById('ai-stat-total').textContent = AI.selectedNames.size;
+}
+
+// ---- Research control ----
+async function startAIResearch() {
+  if (AI.selectedNames.size === 0) {
+    showToast('Select at least one lead first', 'warning'); return;
+  }
+  try {
+    const res = await fetch('/api/ai/research/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ business_names: Array.from(AI.selectedNames) }),
+    }).then(r => r.json());
+
+    if (res.ok === false) { showToast('Error: ' + res.error, 'error'); return; }
+    showToast('AI research started for ' + (res.total || '?') + ' companies', 'success');
+    document.getElementById('btn-ai-stop').style.display = '';
+    document.getElementById('ai-progress-row').style.display = '';
+  } catch (e) { showToast('Failed to start research: ' + e, 'error'); }
+}
+
+async function stopAIResearch() {
+  await fetch('/api/ai/research/stop', { method: 'POST' });
+  showToast('Research stopping…', 'info');
+}
+
+async function retryFailedResearch() {
+  const res = await fetch('/api/ai/research/retry', { method: 'POST' }).then(r => r.json());
+  if (res.ok) showToast('Retrying failed companies…', 'info');
+  else showToast('Nothing to retry', 'warning');
+}
+
+// ---- Status polling ----
+function startAIStatusPoll() {
+  if (AI.pollTimer) clearInterval(AI.pollTimer);
+  AI.pollTimer = setInterval(pollAIStatus, 3000);
+}
+
+async function pollAIStatus() {
+  try {
+    const st = await fetch('/api/ai/status').then(r => r.json());
+    updateAIProgressUI(st);
+
+    if (st.state === 'completed' || st.state === 'error') {
+      const reps = await fetch('/api/ai/reports').then(r => r.json());
+      window._aiReports = reps;
+      renderAILeadRows();
+      document.getElementById('btn-ai-stop').style.display = 'none';
+      if (Object.values(reps).some(r => r.research_status === 'failed')) {
+        document.getElementById('btn-ai-retry').style.display = '';
+      }
+    }
+  } catch (e) { /* non-critical */ }
+}
+
+function updateAIProgressUI(st) {
+  document.getElementById('ai-stat-done').textContent = st.completed || 0;
+  document.getElementById('ai-stat-failed').textContent = st.failed || 0;
+  document.getElementById('ai-stat-queue').textContent = (st.queue || []).length;
+  const pct = st.total > 0 ? Math.round(((st.completed + st.failed) / st.total) * 100) : 0;
+  document.getElementById('ai-progress-bar').style.width = pct + '%';
+  document.getElementById('ai-progress-counts').textContent =
+    (st.completed + st.failed) + ' / ' + st.total;
+  const label = document.getElementById('ai-progress-label');
+  if (st.state === 'running') {
+    label.textContent = st.current_company ? 'Researching: ' + st.current_company : 'Starting…';
+  } else if (st.state === 'completed') {
+    label.textContent = '? Research complete';
+  } else if (st.state === 'error') {
+    label.textContent = '? Error: ' + (st.error || 'unknown');
+  }
+}
+
+// ---- Report viewer ----
+async function viewAIReport(name) {
+  try {
+    const rep = await fetch('/api/ai/report/' + encodeURIComponent(name)).then(r => r.json());
+    AI.currentReport = rep;
+    document.getElementById('ai-report-title').textContent = '?? ' + name;
+    document.getElementById('ai-report-section').style.display = '';
+    switchAITab(AI.currentTab);
+  } catch (e) { showToast('Could not load report: ' + e, 'error'); }
+}
+
+function closeAIReport() {
+  document.getElementById('ai-report-section').style.display = 'none';
+  AI.currentReport = null;
+}
+
+function switchAITab(tab) {
+  AI.currentTab = tab;
+  document.querySelectorAll('.ai-tab').forEach(b => b.classList.remove('active'));
+  const btn = document.getElementById('tab-' + tab);
+  if (btn) btn.classList.add('active');
+  renderAITabContent(tab);
+}
+
+function renderAITabContent(tab) {
+  const r = AI.currentReport;
+  const el = document.getElementById('ai-tab-content');
+  if (!r || !el) return;
+  let html = '';
+  switch (tab) {
+    case 'overview':
+      html = section('Company Overview', r.company_overview) +
+             section('Industry', r.industry + ' | ' + r.business_model) +
+             section('Products & Services', r.products_services) +
+             section('Existing Capabilities', r.existing_capabilities) +
+             section('Technology Signals', r.technology_signals);
+      break;
+    case 'website':
+      html = badge('Website Status', r.website_status) +
+             section('Website Summary', r.website_summary) +
+             section('? Strengths', r.website_strengths) +
+             section('?? Problems', r.website_problems) +
+             section('?? Improvement Opportunities', r.website_improvement_opportunities) +
+             section('?? Recommendations', r.website_recommendations);
+      break;
+    case 'opportunity':
+      html = section('SystemaOps Opportunity', r.systemaops_business_opportunity) +
+             badge('Priority', r.opportunity_priority) + ' ' + badge('Confidence', r.recommendation_confidence) + '<br><br>' +
+             section('Strongest Match', r.strongest_opportunity) +
+             section('Recommended Services', r.recommended_services) +
+             section('Business Challenge', r.potential_business_challenge) +
+             section('Evidence', r.evidence) +
+             section('Expected Benefit', r.expected_benefit);
+      break;
+    case 'meeting':
+      html = section('Meeting Opening', r.meeting_opening) +
+             section('Discovery Questions', r.discovery_questions) +
+             section('Sales Pitch', r.sales_pitch) +
+             section('Next Step', r.suggested_next_action);
+      break;
+    case 'outreach':
+      html = copyBox('Email Subject', r.email_subject) +
+             copyBox('Personalized Email', r.personalized_email) +
+             copyBox('LinkedIn Message', r.linkedin_message) +
+             copyBox('Follow-up Message', r.follow_up_message);
+      break;
+    case 'content':
+      html = section('Post Topic', r.post_topic) +
+             copyBox('Post Text', r.post_text) +
+             section('Call to Action', r.call_to_action);
+      break;
+  }
+  el.innerHTML = html || '<span style="color:#6b7280">No data</span>';
+}
+
+function section(title, text) {
+  if (!text) return '';
+  return '<div style="margin-bottom:0.9rem;"><div style="font-size:0.7rem; font-weight:700; color:#7c3aed; text-transform:uppercase; margin-bottom:0.3rem;">' +
+    title + '</div><div style="color:#d1d5db;">' + escHtml(text) + '</div></div>';
+}
+function badge(label, value) {
+  if (!value) return '';
+  const colors = { high:'#dc2626', medium:'#d97706', low:'#059669', completed:'#059669', available:'#059669' };
+  const bg = colors[String(value).toLowerCase()] || '#4c1d95';
+  return '<span style="font-size:0.7rem; background:' + bg + '; color:#fff; padding:0.2rem 0.5rem; border-radius:4px; font-weight:600;">' +
+    label + ': ' + value + '</span>';
+}
+function copyBox(title, text) {
+  if (!text) return '';
+  const id = 'copy-' + Math.random().toString(36).slice(2);
+  return '<div style="margin-bottom:0.9rem;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.3rem;">' +
+    '<div style="font-size:0.7rem; font-weight:700; color:#7c3aed; text-transform:uppercase;">' + title + '</div>' +
+    '<button onclick="copyAIText(\'' + id + '\')" style="font-size:0.65rem;background:#2d2d4e;color:#a78bfa;border:none;padding:0.2rem 0.5rem;border-radius:4px;cursor:pointer;">Copy</button>' +
+    '</div><div id="' + id + '" style="color:#d1d5db; background:#0f0f1a; border-radius:6px; padding:0.6rem; white-space:pre-wrap;">' + escHtml(text) + '</div></div>';
+}
+function escHtml(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function copyAIText(id) {
+  const el = document.getElementById(id);
+  if (el) navigator.clipboard.writeText(el.textContent).then(() => showToast('Copied!', 'success'));
+}
+
+async function exportEnrichedCSV() {
+  window.location.href = '/api/ai/export/enriched';
+}
+
+// ---- Expose to global ----
+window.startAIResearch = startAIResearch;
+window.stopAIResearch = stopAIResearch;
+window.retryFailedResearch = retryFailedResearch;
+window.aiSelectAll = aiSelectAll;
+window.toggleAILead = toggleAILead;
+window.viewAIReport = viewAIReport;
+window.closeAIReport = closeAIReport;
+window.switchAITab = switchAITab;
+window.copyAIText = copyAIText;
+window.exportEnrichedCSV = exportEnrichedCSV;
+
+// Auto-init when DOM is ready
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initAIPanel);
+} else {
+  setTimeout(initAIPanel, 500);
+}

@@ -207,7 +207,7 @@ a:hover {
 
 .scraper-form-grid {
   display: grid;
-  grid-template-columns: 1.4fr 1.1fr 140px auto;
+  grid-template-columns: 1.4fr 1.1fr 140px 150px auto;
   gap: 1rem;
   align-items: flex-end;
 }
@@ -703,3 +703,51 @@ a:hover {
   from { opacity: 0; }
   to { opacity: 1; }
 }
+
+/* ================================================================
+   AI Business Intelligence Panel
+   ================================================================ */
+.ai-tab {
+  font-size: 0.75rem;
+  font-weight: 600;
+  background: #1e1b4b;
+  color: #8b8fa8;
+  border: 1px solid #2d2d4e;
+  padding: 0.3rem 0.8rem;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.ai-tab.active,
+.ai-tab:hover {
+  background: #7c3aed;
+  color: #fff;
+  border-color: #7c3aed;
+}
+
+.ai-lead-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.4rem 0.5rem;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s;
+  font-size: 0.8rem;
+  color: #d1d5db;
+}
+.ai-lead-row:hover { background: #1e1b4b; }
+.ai-lead-row .ai-status-dot {
+  width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+}
+.ai-lead-row .ai-view-btn {
+  margin-left: auto;
+  font-size: 0.7rem;
+  background: #2d2d4e;
+  color: #a78bfa;
+  border: none;
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.ai-lead-row .ai-view-btn:hover { background: #4c1d95; }

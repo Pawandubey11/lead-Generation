@@ -46,7 +46,7 @@ print(f"\nOriginal Leads: {len(df)}")
 # ----------------------------------------
 
 # Explicitly cast all potential string/text columns to string to prevent float64 type inference issues
-text_cols = ["business_name", "phone", "website", "address", "instagram", "facebook", "linkedin", "email", "city", "business_type", "country", "spin", "scraped_at"]
+text_cols = ["business_name", "phone", "website", "address", "instagram", "facebook", "linkedin", "email", "city", "business_type", "country", "spin", "scraped_at", "source_name", "source_url"]
 for col in text_cols:
     if col in df.columns:
         df[col] = df[col].fillna("").astype(str).replace(["nan", "0", "0.0", "None"], "").str.strip()

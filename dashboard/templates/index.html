@@ -68,6 +68,19 @@
               </select>
             </div>
 
+            <div class="form-group">
+              <label class="form-label" for="input-max-leads-per-city">
+                <span>Max Leads Per Hub</span>
+              </label>
+              <select id="input-max-leads-per-city" class="form-select">
+                <option value="10">10 Leads</option>
+                <option value="20" selected>20 Leads</option>
+                <option value="50">50 Leads</option>
+                <option value="100">100 Leads</option>
+                <option value="200">200 Leads</option>
+              </select>
+            </div>
+
             <!-- Action Button -->
             <div>
               <button type="submit" class="btn btn-primary" id="btn-start-scrape" style="width:100%;">
@@ -118,6 +131,86 @@
           <div class="progress-track">
             <div class="progress-fill" id="progress-fill-bar" style="width: 0%;"></div>
           </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- AI Business Intelligence Panel -->
+    <section class="card" id="ai-intelligence-panel" style="border-color:#7c3aed; margin-bottom:1.5rem;">
+      <div class="card-body" style="padding:1.25rem 1.5rem;">
+
+        <!-- Header -->
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem; flex-wrap:wrap; gap:0.5rem;">
+          <div style="font-size:0.95rem; font-weight:700; color:#a78bfa; display:flex; align-items:center; gap:0.5rem;">
+            <span>🤖</span>
+            <span>AI Business Intelligence</span>
+            <span id="ai-mode-badge" style="font-size:0.7rem; background:#4c1d95; color:#c4b5fd; padding:0.2rem 0.5rem; border-radius:999px; font-weight:600;">MOCK MODE</span>
+          </div>
+          <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+            <button id="btn-ai-select-all" onclick="aiSelectAll()" style="font-size:0.75rem; background:#1e1b4b; color:#a78bfa; border:1px solid #4c1d95; padding:0.3rem 0.7rem; border-radius:6px; cursor:pointer;">Select All</button>
+            <button id="btn-ai-start" onclick="startAIResearch()" style="font-size:0.8rem; background:#7c3aed; color:#fff; border:none; padding:0.4rem 1rem; border-radius:6px; cursor:pointer; font-weight:600;">▶ Start Research</button>
+            <button id="btn-ai-stop" onclick="stopAIResearch()" style="display:none; font-size:0.8rem; background:#dc2626; color:#fff; border:none; padding:0.4rem 1rem; border-radius:6px; cursor:pointer;">⏹ Stop</button>
+            <button id="btn-ai-retry" onclick="retryFailedResearch()" style="display:none; font-size:0.8rem; background:#d97706; color:#fff; border:none; padding:0.4rem 1rem; border-radius:6px; cursor:pointer;">↻ Retry Failed</button>
+            <button id="btn-ai-export" onclick="exportEnrichedCSV()" style="font-size:0.8rem; background:#059669; color:#fff; border:none; padding:0.4rem 1rem; border-radius:6px; cursor:pointer;">⬇ Export Enriched CSV</button>
+          </div>
+        </div>
+
+        <!-- Progress bar -->
+        <div id="ai-progress-row" style="display:none; margin-bottom:1rem;">
+          <div style="display:flex; justify-content:space-between; font-size:0.75rem; color:#8b8fa8; margin-bottom:0.3rem;">
+            <span id="ai-progress-label">Researching…</span>
+            <span id="ai-progress-counts">0 / 0</span>
+          </div>
+          <div style="background:#1e1b4b; border-radius:4px; height:6px;">
+            <div id="ai-progress-bar" style="background:#7c3aed; height:6px; border-radius:4px; width:0%; transition:width 0.4s;"></div>
+          </div>
+        </div>
+
+        <!-- Summary stats -->
+        <div id="ai-stats-row" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(100px,1fr)); gap:0.75rem; margin-bottom:1rem;">
+          <div style="text-align:center; background:#1e1b4b; border-radius:8px; padding:0.6rem;">
+            <div id="ai-stat-total" style="font-size:1.3rem; font-weight:700; color:#a78bfa;">0</div>
+            <div style="font-size:0.65rem; color:#6b7280; text-transform:uppercase;">Selected</div>
+          </div>
+          <div style="text-align:center; background:#1e1b4b; border-radius:8px; padding:0.6rem;">
+            <div id="ai-stat-done" style="font-size:1.3rem; font-weight:700; color:#34d399;">0</div>
+            <div style="font-size:0.65rem; color:#6b7280; text-transform:uppercase;">Completed</div>
+          </div>
+          <div style="text-align:center; background:#1e1b4b; border-radius:8px; padding:0.6rem;">
+            <div id="ai-stat-failed" style="font-size:1.3rem; font-weight:700; color:#f87171;">0</div>
+            <div style="font-size:0.65rem; color:#6b7280; text-transform:uppercase;">Failed</div>
+          </div>
+          <div style="text-align:center; background:#1e1b4b; border-radius:8px; padding:0.6rem;">
+            <div id="ai-stat-queue" style="font-size:1.3rem; font-weight:700; color:#fbbf24;">0</div>
+            <div style="font-size:0.65rem; color:#6b7280; text-transform:uppercase;">In Queue</div>
+          </div>
+        </div>
+
+        <!-- Lead selection table -->
+        <div style="font-size:0.75rem; color:#6b7280; margin-bottom:0.5rem;">Select leads to research:</div>
+        <div id="ai-lead-table" style="max-height:220px; overflow-y:auto; border:1px solid #2d2d4e; border-radius:8px; background:#0f0f1a;">
+          <div id="ai-lead-rows" style="padding:0.5rem;"></div>
+        </div>
+
+        <!-- Report viewer -->
+        <div id="ai-report-section" style="display:none; margin-top:1.25rem; border-top:1px solid #2d2d4e; padding-top:1rem;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem;">
+            <div id="ai-report-title" style="font-size:0.9rem; font-weight:700; color:#a78bfa;">Company Report</div>
+            <button onclick="closeAIReport()" style="font-size:0.75rem; background:#2d2d4e; color:#9ca3af; border:none; padding:0.3rem 0.7rem; border-radius:6px; cursor:pointer;">✕ Close</button>
+          </div>
+
+          <!-- Tabs -->
+          <div style="display:flex; gap:0.5rem; margin-bottom:1rem; flex-wrap:wrap;">
+            <button class="ai-tab active" onclick="switchAITab('overview')" id="tab-overview">Overview</button>
+            <button class="ai-tab" onclick="switchAITab('website')" id="tab-website">Website</button>
+            <button class="ai-tab" onclick="switchAITab('opportunity')" id="tab-opportunity">Opportunity</button>
+            <button class="ai-tab" onclick="switchAITab('meeting')" id="tab-meeting">Meeting Prep</button>
+            <button class="ai-tab" onclick="switchAITab('outreach')" id="tab-outreach">Outreach</button>
+            <button class="ai-tab" onclick="switchAITab('content')" id="tab-content">Content</button>
+          </div>
+
+          <div id="ai-tab-content" style="background:#1a1a2e; border-radius:8px; padding:1rem; font-size:0.82rem; color:#d1d5db; line-height:1.6; white-space:pre-wrap; max-height:400px; overflow-y:auto;"></div>
         </div>
 
       </div>
