@@ -83,6 +83,11 @@ class SecurityAndScrapeRequestTests(unittest.TestCase):
 
         cls.client = TestClient(app)
 
+    def test_dashboard_homepage_renders(self):
+        response = self.client.get("/")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("LeadPulse", response.text)
+
     def test_exports_require_authentication(self):
         for path in (
             "/api/export/csv",

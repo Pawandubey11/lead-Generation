@@ -214,7 +214,8 @@ async def favicon_ico():
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+    html = templates.env.get_template("index.html").render(request=request)
+    return HTMLResponse(content=html)
 
 @app.get("/api/info")
 def api_info():
