@@ -712,7 +712,7 @@ def scrape_business(link, p, browser, page):
 # SCRAPE ONE CITY
 # ============================================
 
-def scrape_city(business_type, city, p, browser, page, partial_save_callback=None):
+def scrape_city(business_type, city, p, browser, page, partial_save_callback=None, max_leads_per_city=20):
     city_leads = []
     search_query = f"{business_type} in {city}"
 
@@ -814,11 +814,13 @@ def scrape_city(business_type, city, p, browser, page, partial_save_callback=Non
 
     max_biz_env = os.environ.get("MAX_BIZ_PER_CITY")
     if max_biz_env and max_biz_env.isdigit():
-        business_links = business_links[:int(max_biz_env)]
-    elif is_quick:
-        business_links = business_links[:3]
+        selected_limit = int(max_biz_env)
+    elif is_quick and max_leads_per_city <= 20:
+        selected_limit = 3
     else:
-        business_links = business_links[:20]
+        selected_limit = max_leads_per_city
+    selected_limit = max(1, min(selected_limit, 200))
+    business_links = business_links[:selected_limit]
 
     print(f"\n  Found {len(business_links)} businesses in {city}")
     _notify("businesses_found", {"city": city, "total_businesses": len(business_links)})
@@ -849,7 +851,7 @@ def scrape_city(business_type, city, p, browser, page, partial_save_callback=Non
 # MAIN GENERATE LEADS — COUNTRY MODE
 # ============================================
 
-def generate_leads(business_type, country, max_cities=30, custom_cities=None):
+def generate_leads(business_type, country, max_cities=30, custom_cities=None, max_leads_per_city=20):
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     if custom_cities:
@@ -934,7 +936,13 @@ def generate_leads(business_type, country, max_cities=30, custom_cities=None):
                     _notify("log", {"message": f"💾 Saved partial lead: {len(partial_rows)} in {city}"})
 
                 city_leads, browser, page = scrape_city(
-                    business_type, city, p, browser, page, save_partial_city
+                    business_type,
+                    city,
+                    p,
+                    browser,
+                    page,
+                    save_partial_city,
+                    max_leads_per_city,
                 )
 
                 scrape_time = time.strftime("%Y-%m-%d %H:%M:%S")

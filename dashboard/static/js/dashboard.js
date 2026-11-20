@@ -69,6 +69,17 @@
       .replace(/"/g, '&quot;');
   }
 
+  function safeWebsiteUrl(rawUrl) {
+    if (!rawUrl) return '';
+    try {
+      const url = new URL(String(rawUrl), window.location.origin);
+      if (url.protocol !== 'https:' && url.protocol !== 'http:') return '';
+      return url.href;
+    } catch (err) {
+      return '';
+    }
+  }
+
   // --- Initialization ---
   async function init() {
     renderFieldChips();
@@ -299,8 +310,8 @@
           </span>
         </td>
         <td>
-          ${lead.website ? `
-            <a href="${escapeHtml(lead.website)}" target="_blank" rel="noopener" style="font-size:0.8rem;">
+          ${safeWebsiteUrl(lead.website) ? `
+            <a href="${escapeHtml(safeWebsiteUrl(lead.website))}" target="_blank" rel="noopener noreferrer" style="font-size:0.8rem;">
               Visit Website ↗
             </a>
           ` : '<span style="color:#64748B;">—</span>'}
@@ -449,6 +460,7 @@
     const industry = $('input-industry').value.trim();
     const location = $('input-location').value.trim();
     const maxCities = parseInt($('input-max-cities').value, 10) || 10;
+    const maxLeadsPerCity = parseInt($('input-max-leads-per-city')?.value, 10) || 20;
 
     if (!industry) {
       showToast('Please enter a target industry.', false);
@@ -495,6 +507,7 @@
       country: isCountry ? location : (isCountryCityPair ? locationParts[1] : null),
       cities: isCountry ? null : (isCountryCityPair ? locationParts[0] : location),
       max_cities: maxCities,
+      max_leads_per_city: maxLeadsPerCity,
     };
 
     try {

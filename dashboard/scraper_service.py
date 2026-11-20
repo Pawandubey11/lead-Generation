@@ -211,7 +211,7 @@ def _update_last_history_entry():
 # Worker thread
 # ---------------------------------------------------------------------------
 
-def _scrape_worker(business_type: str, scope: str, country: Optional[str], cities_str: Optional[str], max_cities: int):
+def _scrape_worker(business_type: str, scope: str, country: Optional[str], cities_str: Optional[str], max_cities: int, max_leads_per_city: int):
     """Runs in a background thread. Calls generate_leads() and lead_cleaner."""
     try:
         from scrapers.crawler import (
@@ -248,7 +248,13 @@ def _scrape_worker(business_type: str, scope: str, country: Optional[str], citie
                 _add_log(f"🚀 Starting scrape: {business_type} in {country} (max {max_cities} cities)")
 
         # ---- Run the crawler ----
-        df = generate_leads(business_type, target_location, max_cities=max_cities, custom_cities=custom_cities)
+        df = generate_leads(
+            business_type,
+            target_location,
+            max_cities=max_cities,
+            custom_cities=custom_cities,
+            max_leads_per_city=max_leads_per_city,
+        )
 
         # ---- Run lead cleaner (same as main.py does) ----
         with _lock:
@@ -329,7 +335,7 @@ def _scrape_worker(business_type: str, scope: str, country: Optional[str], citie
 # Public API
 # ---------------------------------------------------------------------------
 
-def start_scrape(business_type: str, scope: str = "country", country: Optional[str] = None, cities: Optional[str] = None, max_cities: int = 30) -> Dict[str, Any]:
+def start_scrape(business_type: str, scope: str = "country", country: Optional[str] = None, cities: Optional[str] = None, max_cities: int = 30, max_leads_per_city: int = 20) -> Dict[str, Any]:
     """
     Start a scrape job in the background.
     Returns {"ok": True, "status": "started"} or {"ok": False, "status": "error", "error": "..."}.
@@ -391,9 +397,11 @@ def start_scrape(business_type: str, scope: str = "country", country: Optional[s
             "spin": spin_str,
         })
 
+    max_leads_per_city = max(1, min(int(max_leads_per_city), 200))
+
     _worker_thread = threading.Thread(
         target=_scrape_worker,
-        args=(business_type, scope, country, cities, max_cities),
+        args=(business_type, scope, country, cities, max_cities, max_leads_per_city),
         daemon=True,
         name="scraper-worker",
     )
