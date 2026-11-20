@@ -1,4 +1,4 @@
-"""
+﻿"""
 app.py
 ------
 FastAPI application for the Lead Generation Dashboard.
@@ -214,8 +214,7 @@ async def favicon_ico():
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
-    html = templates.env.get_template("index.html").render(request=request)
-    return HTMLResponse(content=html)
+    return templates.TemplateResponse(request=request, name="index.html")
 
 @app.get("/api/info")
 def api_info():
@@ -727,4 +726,102 @@ def debug_files(user_id: int = Depends(get_current_user_id)):
         "cwd": os.getcwd(),
         "files": files_info,
     }
+
+
+# ===========================================================================
+# AI Business Intelligence endpoints
+# ===========================================================================
+
+import ai_service as ai_svc  # noqa: E402 — imported here to avoid circular import at startup
+
+
+class AIResearchRequest(BaseModel):
+    """Request body for starting AI research."""
+    business_names: List[str] = Field(default_factory=list, description="Names of leads to research")
+
+
+class AIReportMarkRequest(BaseModel):
+    business_name: str
+    reviewed: bool = True
+
+
+@app.get("/api/ai/config")
+def ai_config():
+    """Return AI configuration (no secrets exposed)."""
+    return ai_svc.get_ai_config()
+
+
+@app.get("/api/ai/status")
+def ai_status():
+    """Return current AI research queue status."""
+    return ai_svc.get_research_status()
+
+
+@app.post("/api/ai/research/start")
+def ai_research_start(req: AIResearchRequest, user_id: int = Depends(get_current_user_id)):
+    """
+    Start background AI research for the selected leads.
+    Pass business_names as an array; pass [] to research all current leads.
+    """
+    df = svc.load_leads()
+    if df is None or df.empty:
+        raise HTTPException(status_code=404, detail="No leads found")
+
+    all_leads = df.to_dict(orient="records")
+
+    if req.business_names:
+        selected = [
+            ld for ld in all_leads
+            if ld.get("business_name") in req.business_names
+        ]
+    else:
+        selected = all_leads
+
+    if not selected:
+        raise HTTPException(status_code=400, detail="No matching leads found")
+
+    result = ai_svc.start_research(selected)
+    return result
+
+
+@app.post("/api/ai/research/stop")
+def ai_research_stop():
+    """Stop ongoing AI research."""
+    return ai_svc.stop_research()
+
+
+@app.post("/api/ai/research/retry")
+def ai_research_retry(user_id: int = Depends(get_current_user_id)):
+    """Retry companies that failed in the previous research run."""
+    df = svc.load_leads()
+    leads = df.to_dict(orient="records") if df is not None else []
+    return ai_svc.retry_failed_research(leads)
+
+
+@app.get("/api/ai/report/{business_name}")
+def ai_company_report(business_name: str):
+    """Return the AI research report for a single company."""
+    report = ai_svc.get_company_report(business_name)
+    if report is None:
+        raise HTTPException(status_code=404, detail="No report found for this company")
+    return report
+
+
+@app.get("/api/ai/reports")
+def ai_all_reports():
+    """Return all completed AI research results."""
+    return ai_svc.get_all_reports()
+
+
+@app.get("/api/ai/export/enriched")
+def ai_export_enriched(user_id: int = Depends(require_authenticated_user)):
+    """Export leads merged with AI research as an enriched CSV."""
+    df = svc.load_leads()
+    leads = df.to_dict(orient="records") if df is not None else []
+    csv_bytes = ai_svc.export_enriched_csv(leads)
+    return Response(
+        content=csv_bytes,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=systemaops_enriched_leads.csv"},
+    )
 
