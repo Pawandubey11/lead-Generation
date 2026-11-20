@@ -207,7 +207,7 @@ a:hover {
 
 .scraper-form-grid {
   display: grid;
-  grid-template-columns: 1.4fr 1.1fr 140px auto;
+  grid-template-columns: 1.4fr 1.1fr 140px 150px auto;
   gap: 1rem;
   align-items: flex-end;
 }

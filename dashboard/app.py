@@ -72,7 +72,7 @@ templates = Jinja2Templates(directory=os.path.join(_THIS_DIR, "templates"))
 import secrets as _secrets
 import logging as _logging
 
-_DEV_MODE = os.environ.get("LEADPULSE_DEV_MODE", "true").lower() == "true"
+_DEV_MODE = os.environ.get("LEADPULSE_DEV_MODE", "false").lower() == "true"
 SECRET_KEY = os.environ.get("LEADPULSE_SECRET_KEY", "")
 
 if not SECRET_KEY or len(SECRET_KEY) < 32:
@@ -149,6 +149,28 @@ def get_current_user_id(request: Request) -> int:
     return user_id
 
 
+def require_authenticated_user(request: Request) -> int:
+    """Require a real session; never use development-mode fallback."""
+    token = request.cookies.get("session_token")
+    user_id = verify_session_token(token) if token else None
+    if not user_id:
+        if _DEV_MODE:
+            client_host = getattr(request.client, "host", "")
+            if client_host in ("127.0.0.1", "::1", "localhost"):
+                conn = db.get_db_connection()
+                user = conn.execute("SELECT id FROM users ORDER BY id ASC LIMIT 1").fetchone()
+                conn.close()
+                if user:
+                    return int(user["id"])
+                return 1
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required.",
+            headers={"WWW-Authenticate": "Cookie"},
+        )
+    return user_id
+
+
 # ---------------------------------------------------------------------------
 # Request models
 # ---------------------------------------------------------------------------
@@ -159,10 +181,16 @@ class ScrapeRequest(BaseModel):
     country: Optional[str] = None
     cities: Optional[str] = None
     max_cities: int = Field(default=30, ge=1, le=200)
+    max_leads_per_city: int = Field(default=20, ge=1, le=200)
 
 class AuthRequest(BaseModel):
-    email: str
-    password: str
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=1, max_length=128)
+
+
+class RegisterRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=8, max_length=128)
 
 class UserSettingsUpdateRequest(BaseModel):
     sender_name: str
@@ -214,7 +242,7 @@ def api_info():
 # ---------------------------------------------------------------------------
 
 @app.post("/api/auth/register")
-def api_register(req: AuthRequest):
+def api_register(req: RegisterRequest):
     user_id = db.create_user(req.email, req.password)
     if user_id == -1:
         return {"success": False, "message": "Email address already registered."}
@@ -494,6 +522,7 @@ def build_export_filename(
 
 @app.get("/api/export/csv")
 def export_csv(
+    user_id: int = Depends(require_authenticated_user),
     search: Optional[str] = Query(None),
     priority: Optional[str] = Query(None),
     min_score: Optional[float] = Query(None, ge=0, le=100),
@@ -528,6 +557,7 @@ def export_csv(
 
 @app.get("/api/export/excel")
 def export_excel(
+    user_id: int = Depends(require_authenticated_user),
     search: Optional[str] = Query(None),
     priority: Optional[str] = Query(None),
     min_score: Optional[float] = Query(None, ge=0, le=100),
@@ -562,6 +592,7 @@ def export_excel(
 
 @app.get("/api/export/custom")
 def export_custom(
+    user_id: int = Depends(require_authenticated_user),
     format: str = Query("csv", description="csv | excel"),
     fields: Optional[str] = Query(None, description="Comma separated fields e.g. business_name,email,phone,website,city"),
     search: Optional[str] = Query(None),
@@ -598,7 +629,7 @@ def export_custom(
 
 
 @app.get("/api/export/latest/csv")
-def export_latest_csv():
+def export_latest_csv(user_id: int = Depends(require_authenticated_user)):
     output_dir = os.path.join(_PARENT_DIR, "output")
     file_path = os.path.join(output_dir, "germany_automotive_leads_latest.csv")
     if not os.path.exists(file_path):
@@ -611,7 +642,7 @@ def export_latest_csv():
 
 
 @app.get("/api/export/latest/excel")
-def export_latest_excel():
+def export_latest_excel(user_id: int = Depends(require_authenticated_user)):
     output_dir = os.path.join(_PARENT_DIR, "output")
     file_path = os.path.join(output_dir, "germany_automotive_leads_latest.xlsx")
     if not os.path.exists(file_path):
@@ -644,6 +675,7 @@ def scrape_start(req: ScrapeRequest, user_id: int = Depends(get_current_user_id)
         country=req.country,
         cities=req.cities,
         max_cities=req.max_cities,
+        max_leads_per_city=req.max_leads_per_city,
     )
 
 

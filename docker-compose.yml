@@ -43,5 +43,6 @@ services:
       - LEADS_CSV_PATH=/app/output/final_ai_leads.csv
       # Path to Google cookies file for bypassing datacenter-IP consent walls
       - GOOGLE_COOKIES_PATH=/app/config/google_cookies.json
+      - LEADPULSE_DEV_MODE=true
 
     restart: unless-stopped

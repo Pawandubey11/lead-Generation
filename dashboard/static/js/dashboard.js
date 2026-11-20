@@ -69,6 +69,17 @@
       .replace(/"/g, '&quot;');
   }
 
+  function safeWebsiteUrl(rawUrl) {
+    if (!rawUrl) return '';
+    try {
+      const url = new URL(String(rawUrl), window.location.origin);
+      if (url.protocol !== 'https:' && url.protocol !== 'http:') return '';
+      return url.href;
+    } catch (err) {
+      return '';
+    }
+  }
+
   // --- Initialization ---
   async function init() {
     renderFieldChips();
@@ -157,6 +168,21 @@
     } catch (err) {
       console.error('Error loading leads:', err);
       showToast('Error fetching leads dataset.', false);
+    }
+  }
+
+  async function refreshLeadsWithoutToast() {
+    try {
+      const res = await fetch('/api/leads?page=1&page_size=2000', {
+        cache: 'no-store',
+        headers: { 'Cache-Control': 'no-cache' },
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      state.leads = data.data || data.leads || [];
+      applyLocalFilter();
+    } catch (err) {
+      console.error('Error refreshing live leads:', err);
     }
   }
 
@@ -299,8 +325,8 @@
           </span>
         </td>
         <td>
-          ${lead.website ? `
-            <a href="${escapeHtml(lead.website)}" target="_blank" rel="noopener" style="font-size:0.8rem;">
+          ${safeWebsiteUrl(lead.website) ? `
+            <a href="${escapeHtml(safeWebsiteUrl(lead.website))}" target="_blank" rel="noopener noreferrer" style="font-size:0.8rem;">
               Visit Website ↗
             </a>
           ` : '<span style="color:#64748B;">—</span>'}
@@ -449,6 +475,7 @@
     const industry = $('input-industry').value.trim();
     const location = $('input-location').value.trim();
     const maxCities = parseInt($('input-max-cities').value, 10) || 10;
+    const maxLeadsPerCity = parseInt($('input-max-leads-per-city')?.value, 10) || 20;
 
     if (!industry) {
       showToast('Please enter a target industry.', false);
@@ -495,6 +522,7 @@
       country: isCountry ? location : (isCountryCityPair ? locationParts[1] : null),
       cities: isCountry ? null : (isCountryCityPair ? locationParts[0] : location),
       max_cities: maxCities,
+      max_leads_per_city: maxLeadsPerCity,
     };
 
     try {
@@ -557,7 +585,7 @@
         $('progress-leads-count').textContent = (s.total_leads_found || 0).toLocaleString();
         $('progress-pct-text').textContent = `${s.progress_pct || 0}%`;
         $('progress-fill-bar').style.width = `${s.progress_pct || 0}%`;
-        await loadInitialLeads();
+        await refreshLeadsWithoutToast();
       } else {
         if (state.scraper.isRunning) {
           state.scraper.isRunning = false;

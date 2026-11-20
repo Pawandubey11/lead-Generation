@@ -18,6 +18,8 @@ The project is designed for researchers, sales teams, and developers who need an
 - SQLite authentication and user settings
 - Optional Docker deployment
 - Optional n8n webhook delivery
+- Configurable listing depth per city
+- Configurable login and export security settings
 
 ## How it works
 

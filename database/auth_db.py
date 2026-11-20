@@ -4,6 +4,8 @@ import os
 import hashlib
 import binascii
 from datetime import datetime
+import secrets
+import hmac
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "auth_database.db")
 
@@ -28,6 +30,12 @@ def init_db():
         created_at TEXT NOT NULL
     )
     """)
+
+    columns = {row[1] for row in cursor.execute("PRAGMA table_info(users)").fetchall()}
+    if "password_salt" not in columns:
+        cursor.execute("ALTER TABLE users ADD COLUMN password_salt TEXT")
+    if "password_iterations" not in columns:
+        cursor.execute("ALTER TABLE users ADD COLUMN password_iterations INTEGER")
     
     # 2. User Settings Table
     cursor.execute("""
@@ -57,23 +65,36 @@ def init_db():
     conn.close()
 
 def hash_password(password: str) -> str:
-    """Hash a password using PBKDF2 HMAC SHA256 with a static salt."""
+    """Backward-compatible wrapper for legacy static-salt hashes."""
     salt = b"SystemaOpsLeadPulseSaltSecured"
-    pwdhash = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 100000)
-    return binascii.hexlify(pwdhash).decode('ascii')
+    pwdhash = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 100000)
+    return binascii.hexlify(pwdhash).decode("ascii")
+
+
+def hash_password_secure(password: str) -> tuple[str, str, int]:
+    iterations = 310000
+    salt = secrets.token_hex(16)
+    pwdhash = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt.encode("ascii"),
+        iterations,
+    )
+    return binascii.hexlify(pwdhash).decode("ascii"), salt, iterations
 
 def create_user(email: str, password: str) -> int:
     """Create a new user and populate default settings/services."""
     email = email.strip().lower()
-    pwd_hash = hash_password(password)
+    pwd_hash, password_salt, password_iterations = hash_password_secure(password)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
         cursor.execute(
-            "INSERT INTO users (email, password_hash, created_at) VALUES (?, ?, ?)",
-            (email, pwd_hash, now)
+            "INSERT INTO users (email, password_hash, password_salt, password_iterations, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (email, pwd_hash, password_salt, password_iterations, now)
         )
         user_id = cursor.lastrowid
         
@@ -108,17 +129,45 @@ def create_user(email: str, password: str) -> int:
 def verify_user(email: str, password: str):
     """Verify email & password, returning user info if correct."""
     email = email.strip().lower()
-    pwd_hash = hash_password(password)
-    
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT id, email FROM users WHERE email = ? AND password_hash = ?",
-        (email, pwd_hash)
+        "SELECT id, email, password_hash, password_salt, password_iterations "
+        "FROM users WHERE email = ?",
+        (email,)
     )
     row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return None
+
+    record = dict(row)
+    password_salt = record.get("password_salt")
+    password_iterations = record.get("password_iterations")
+
+    if password_salt and password_iterations:
+        candidate = hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            password_salt.encode("ascii"),
+            int(password_iterations),
+        )
+        candidate_hash = binascii.hexlify(candidate).decode("ascii")
+        matched = hmac.compare_digest(candidate_hash, record["password_hash"])
+    else:
+        matched = hmac.compare_digest(hash_password(password), record["password_hash"])
+
+    if matched and not password_salt:
+        new_hash, new_salt, new_iterations = hash_password_secure(password)
+        cursor.execute(
+            "UPDATE users SET password_hash = ?, password_salt = ?, password_iterations = ? "
+            "WHERE id = ?",
+            (new_hash, new_salt, new_iterations, record["id"]),
+        )
+        conn.commit()
+
     conn.close()
-    return dict(row) if row else None
+    return {"id": record["id"], "email": record["email"]} if matched else None
 
 def get_user_settings(user_id: int):
     conn = get_db_connection()
