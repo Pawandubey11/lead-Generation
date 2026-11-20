@@ -445,21 +445,48 @@
   }
 
   // --- Scraper Operations ---
+  // --- Locality Mode State ---
+  let _localityModeEnabled = false;
+  let _discoveredLocalities = [];
+
+  function onLocalityModeToggle(enabled) {
+    _localityModeEnabled = enabled;
+    const statusEl = $('locality-mode-status');
+    if (!statusEl) return;
+    if (enabled) {
+      statusEl.style.display = 'inline';
+      statusEl.textContent = 'Localities will be auto-discovered when you start scraping.';
+    } else {
+      statusEl.style.display = 'none';
+      statusEl.textContent = '';
+    }
+  }
+
+  async function discoverLocalities(city, country, businessType) {
+    try {
+      const statusEl = $('locality-mode-status');
+      if (statusEl) { statusEl.style.display = 'inline'; statusEl.textContent = '🔍 Discovering localities…'; }
+      const params = new URLSearchParams({ city, country, business_type: businessType });
+      const res = await fetch(`/api/locality/discover?${params}`);
+      if (!res.ok) throw new Error('Discovery API error');
+      const data = await res.json();
+      _discoveredLocalities = data.localities || [];
+      if (statusEl) statusEl.textContent = `✅ Found ${_discoveredLocalities.length} localities via ${data.source || 'OSM'}`;
+      return _discoveredLocalities;
+    } catch (err) {
+      const statusEl = $('locality-mode-status');
+      if (statusEl) statusEl.textContent = '⚠️ Discovery failed — using city-level search';
+      return [];
+    }
+  }
+
   async function startScrape() {
     const industry = $('input-industry').value.trim();
     const location = $('input-location').value.trim();
     const maxCities = parseInt($('input-max-cities').value, 10) || 10;
 
-    if (!industry) {
-      showToast('Please enter a target industry.', false);
-      $('input-industry').focus();
-      return;
-    }
-    if (!location) {
-      showToast('Please enter a city or country.', false);
-      $('input-location').focus();
-      return;
-    }
+    if (!industry) { showToast('Please enter a target industry.', false); $('input-industry').focus(); return; }
+    if (!location) { showToast('Please enter a city or country.', false); $('input-location').focus(); return; }
 
     // Set active filters to match the current scrape immediately
     $('filter-industry').value = industry;
@@ -469,26 +496,42 @@
     const isCountry = commonCountries.includes(location.toLowerCase());
 
     if (isCountry) {
-      $('filter-country').value = location;
-      state.country = location;
-      $('filter-city').value = '';
-      state.city = '';
+      $('filter-country').value = location; state.country = location;
+      $('filter-city').value = ''; state.city = '';
     } else {
-      $('filter-city').value = location;
-      state.city = location;
-      $('filter-country').value = '';
-      state.country = '';
+      $('filter-city').value = location; state.city = location;
+      $('filter-country').value = ''; state.country = '';
     }
-
     updateFilenamePreview();
 
-    const payload = {
+    let payload = {
       business_type: industry,
       scope: isCountry ? 'country' : 'city',
       country: isCountry ? location : null,
       cities: isCountry ? null : location,
       max_cities: maxCities,
     };
+
+    // Locality mode: discover localities and pass them in the payload
+    if (_localityModeEnabled && !isCountry) {
+      $('btn-start-scrape').disabled = true;
+      const countryGuess = 'India'; // Default; OSM will infer from city name
+      const localities = await discoverLocalities(location, countryGuess, industry);
+      $('btn-start-scrape').disabled = false;
+      if (localities.length > 0) {
+        payload = {
+          business_type: industry,
+          scope: 'city',
+          city: location,
+          country: location,
+          localities: localities.map(l => l.name),
+          max_cities: maxCities,
+        };
+        showToast(`🗺️ Locality mode: ${localities.length} areas in ${location}`);
+      } else {
+        showToast('⚠️ No localities found — using standard city search');
+      }
+    }
 
     try {
       $('btn-start-scrape').style.display = 'none';
@@ -530,23 +573,95 @@
     state.scraper.pollingInterval = setInterval(checkScraperStatus, 1000);
   }
 
+  // --- Coverage Panel Renderer ---
+  function renderCoveragePanel(s) {
+    const panel = document.getElementById('coverage-panel');
+    if (!panel) return;
+
+    const localities      = s.localities || [];
+    const completed       = s.localities_completed || [];
+    const failed          = s.localities_failed || [];
+    const inProgress      = (s.state === 'running') ? (s.current_locality || '') : '';
+    const leadCounts      = s.locality_lead_counts || {};
+    const total           = localities.length;
+    const coveragePct     = total > 0 ? Math.round((completed.length / total) * 100) : 0;
+    const pending         = localities.filter(l => !completed.includes(l) && !failed.includes(l) && l !== inProgress);
+
+    if (!s.is_locality_mode && total === 0) { panel.style.display = 'none'; return; }
+    panel.style.display = 'block';
+
+    // Update counters
+    const setText = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+    setText('coverage-city-label', s.country ? `— ${s.country}` : '');
+    setText('coverage-done-count', completed.length);
+    setText('coverage-inprogress-count', inProgress ? 1 : 0);
+    setText('coverage-pending-count', pending.length);
+    setText('coverage-failed-count', failed.length);
+    setText('coverage-pct', `${coveragePct}%`);
+
+    // Progress bar
+    const bar = document.getElementById('coverage-progress-bar');
+    if (bar) bar.style.width = `${coveragePct}%`;
+
+    // Locality pills grid
+    const grid = document.getElementById('coverage-locality-grid');
+    if (grid && total > 0) {
+      grid.innerHTML = localities.map(loc => {
+        let bg = '#1e293b', border = '#334155', color = '#94A3B8', emoji = '⏳';
+        if (completed.includes(loc))      { bg = '#14532d33'; border = '#22c55e'; color = '#22c55e'; emoji = '✅'; }
+        else if (failed.includes(loc))    { bg = '#7f1d1d33'; border = '#ef4444'; color = '#ef4444'; emoji = '❌'; }
+        else if (loc === inProgress)      { bg = '#78350f33'; border = '#f59e0b'; color = '#f59e0b'; emoji = '🔄'; }
+        const count = leadCounts[loc] !== undefined ? ` (${leadCounts[loc]})` : '';
+        return `<span style="display:inline-flex;align-items:center;gap:0.3rem;padding:0.25rem 0.6rem;border-radius:999px;font-size:0.75rem;border:1px solid ${border};background:${bg};color:${color};">${emoji} ${loc}${count}</span>`;
+      }).join('');
+    }
+
+    // Table
+    const tableWrap = document.getElementById('coverage-table-wrap');
+    const tbody = document.getElementById('coverage-table-body');
+    if (tbody && total > 0) {
+      tableWrap.style.display = 'block';
+      tbody.innerHTML = localities.map(loc => {
+        let statusBadge = '<span style="color:#94A3B8;">⏳ Pending</span>';
+        if (completed.includes(loc))   statusBadge = '<span style="color:#22c55e;">✅ Completed</span>';
+        else if (failed.includes(loc)) statusBadge = '<span style="color:#ef4444;">❌ Failed</span>';
+        else if (loc === inProgress)   statusBadge = '<span style="color:#f59e0b;">🔄 In Progress</span>';
+        const count = leadCounts[loc] !== undefined ? leadCounts[loc] : '—';
+        return `<tr style="border-bottom:1px solid #1e293b;">
+          <td style="padding:0.35rem 0.5rem;">${loc}</td>
+          <td style="text-align:center;padding:0.35rem 0.5rem;">${statusBadge}</td>
+          <td style="text-align:right;padding:0.35rem 0.5rem;color:#38bdf8;font-weight:600;">${count}</td>
+        </tr>`;
+      }).join('');
+    }
+  }
+
   async function checkScraperStatus() {
     try {
       const res = await fetch('/api/scrape/status');
       const s = await res.json();
 
       const running = s.state === 'running' || s.state === 'stopping';
+
+      // Always update coverage panel if locality data present
+      if (s.is_locality_mode || (s.localities && s.localities.length > 0)) {
+        renderCoveragePanel(s);
+      }
+
       if (running) {
         state.scraper.isRunning = true;
-        if (!state.scraper.pollingInterval) {
-          startPolling();
-        }
+        if (!state.scraper.pollingInterval) startPolling();
         $('btn-start-scrape').style.display = 'none';
         $('btn-stop-scrape').style.display = 'inline-flex';
         $('scraper-progress-banner').style.display = 'block';
 
+        // Show locality in progress text if in locality mode
+        const areaLabel = s.is_locality_mode
+          ? (s.current_locality ? `Locality: ${s.current_locality} (${s.locality_index || 0}/${s.total_localities || 0})` : 'Discovering localities…')
+          : (s.current_city ? `Hub: ${s.current_city}` : 'Initializing...');
+
         $('progress-state-text').textContent = `Crawling: ${s.business_type || 'Leads'}`;
-        $('progress-city-text').textContent = s.current_city ? `Hub: ${s.current_city}` : 'Initializing...';
+        $('progress-city-text').textContent = areaLabel;
         $('progress-leads-count').textContent = (s.total_leads_found || 0).toLocaleString();
         $('progress-pct-text').textContent = `${s.progress_pct || 0}%`;
         $('progress-fill-bar').style.width = `${s.progress_pct || 0}%`;
@@ -558,6 +673,8 @@
           resetScraperButtons();
           showToast('Scraping completed! Fresh dataset loaded.');
           await loadInitialLeads();
+          // Final coverage render
+          renderCoveragePanel(s);
         }
       }
     } catch (err) {
@@ -604,6 +721,7 @@
     reloadLeads,
     copyText,
     exportData,
+    onLocalityModeToggle,
   };
 
   document.addEventListener('DOMContentLoaded', init);

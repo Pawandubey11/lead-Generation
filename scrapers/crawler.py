@@ -835,8 +835,10 @@ def scrape_city(business_type, city, p, browser, page):
 # MAIN GENERATE LEADS — COUNTRY MODE
 # ============================================
 
-def generate_leads(business_type, country, max_cities=30, custom_cities=None):
+def generate_leads(business_type, country, max_cities=30, custom_cities=None, is_locality_mode=False):
     os.makedirs(OUTPUT_DIR, exist_ok=True)
+    # Store locality mode flag on the function itself so inner helpers can read it
+    generate_leads._locality_mode = is_locality_mode
 
     if custom_cities:
         cities = custom_cities
@@ -862,11 +864,14 @@ def generate_leads(business_type, country, max_cities=30, custom_cities=None):
         all_leads = existing_df.to_dict("records")
         print(f"Loaded {len(all_leads)} existing leads.")
 
-    print(f"\nTarget: {business_type} across {len(cities)} cities in {country}")
-    print(f"Remaining cities: {len(remaining_cities)}\n")
+    is_locality_mode = getattr(generate_leads, "_locality_mode", False)
+    mode_label = "localities" if is_locality_mode else "cities"
+    print(f"\nTarget: {business_type} across {len(cities)} {mode_label} in {country}")
+    print(f"Remaining {mode_label}: {len(remaining_cities)}\n")
 
     scraped_time = time.strftime("%Y-%m-%d %H:%M:%S")
     friendly_spin = f"{business_type} in {country} ({scraped_time[:16]})"
+    _master_city = country  # saved for locality traceability
 
     import asyncio
     import sys
@@ -883,6 +888,13 @@ def generate_leads(business_type, country, max_cities=30, custom_cities=None):
         for city_idx, city in enumerate(remaining_cities):
             # Allow dashboard to cancel between cities
             _notify("city_start", {"city": city, "city_index": city_idx + 1, "total_cities": len(remaining_cities)})
+            # Also emit locality_start so locality-aware progress tracking works
+            _notify("locality_start", {
+                "locality": city,
+                "locality_index": city_idx + 1,
+                "total_localities": len(remaining_cities),
+                "parent_city": _master_city,
+            })
             print(f"\n[City {city_idx+1}/{len(remaining_cities)}] {city}")
 
             city_leads, browser, page = scrape_city(
@@ -892,7 +904,9 @@ def generate_leads(business_type, country, max_cities=30, custom_cities=None):
             scrape_time = time.strftime("%Y-%m-%d %H:%M:%S")  # Per-city timestamp (DQ-006)
             for lead in city_leads:
                 lead["spin"] = friendly_spin
-                lead["scraped_at"] = scrape_time  # Time of THIS city's scrape
+                lead["scraped_at"] = scrape_time        # Time of THIS city's scrape
+                lead["locality"]   = city               # Which locality produced this lead
+                lead["search_area"] = f"{city}, {_master_city}" if city.lower() != _master_city.lower() else city
 
             all_leads.extend(city_leads)
 
@@ -921,6 +935,14 @@ def generate_leads(business_type, country, max_cities=30, custom_cities=None):
 
             print(f"\n  Progress saved — Total leads so far: {len(df_temp)}")
             _notify("city_done", {"city": city, "city_index": city_idx + 1, "total_cities": len(remaining_cities), "city_leads_count": len(city_leads), "total_leads": len(df_temp)})
+            # Also emit locality_done for the coverage tracker
+            _notify("locality_done", {
+                "locality": city,
+                "locality_index": city_idx + 1,
+                "total_localities": len(remaining_cities),
+                "locality_leads_count": len(city_leads),
+                "total_leads": len(df_temp),
+            })
 
             # Small delay between cities
             time.sleep(2)

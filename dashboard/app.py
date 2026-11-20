@@ -10,7 +10,7 @@ Run with:
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import List, Optional
 import os
 import shutil
 import subprocess
@@ -159,6 +159,10 @@ class ScrapeRequest(BaseModel):
     country: Optional[str] = None
     cities: Optional[str] = None
     max_cities: int = Field(default=30, ge=1, le=200)
+    # Locality mode: list of specific localities to scrape within a city
+    localities: Optional[List[str]] = None
+    # City for locality mode (the parent city name)
+    city: Optional[str] = None
 
 class AuthRequest(BaseModel):
     email: str
@@ -638,12 +642,17 @@ def health():
 
 @app.post("/api/scrape/start")
 def scrape_start(req: ScrapeRequest, user_id: int = Depends(get_current_user_id)):
+    # Locality mode: if localities list provided, use them directly
+    localities = req.localities if req.localities and len(req.localities) > 0 else None
+    # In locality mode, the master city is req.city or req.country
+    effective_country = req.city or req.country
     return scraper_service.start_scrape(
         business_type=req.business_type,
         scope=req.scope,
-        country=req.country,
+        country=effective_country,
         cities=req.cities,
         max_cities=req.max_cities,
+        localities=localities,
     )
 
 
@@ -657,10 +666,64 @@ def scrape_stop():
     return scraper_service.stop_scrape()
 
 
+@app.get("/api/scrape/coverage")
+def scrape_coverage():
+    """Returns locality coverage data for the current/last scrape run."""
+    s = scraper_service.get_scrape_status()
+    localities   = s.get("localities", [])
+    completed    = s.get("localities_completed", [])
+    failed       = s.get("localities_failed", [])
+    in_progress  = s.get("current_locality", "") if s.get("state") == "running" else ""
+    lead_counts  = s.get("locality_lead_counts", {})
+    total        = len(localities)
+    coverage_pct = round(len(completed) / total * 100, 1) if total > 0 else 0.0
+    pending      = [l for l in localities if l not in completed and l not in failed and l != in_progress]
+    return {
+        "is_locality_mode": s.get("is_locality_mode", False),
+        "city":             s.get("country", ""),
+        "business_type":    s.get("business_type", ""),
+        "localities":       localities,
+        "completed":        completed,
+        "failed":           failed,
+        "in_progress":      in_progress,
+        "pending":          pending,
+        "lead_counts":      lead_counts,
+        "total":            total,
+        "coverage_pct":     coverage_pct,
+        "state":            s.get("state", "idle"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Locality discovery endpoint
+# ---------------------------------------------------------------------------
+
+@app.get("/api/locality/discover")
+def locality_discover(city: str, country: str, business_type: str = ""):
+    """
+    Discover localities/neighbourhoods within a city.
+    Returns a list of locality dicts + ready-to-use search queries.
+    """
+    try:
+        from scrapers.location_discovery import LocalityDiscovery
+        ld = LocalityDiscovery(city=city, country=country)
+        localities = ld.discover()
+        queries    = ld.get_search_queries(business_type) if business_type else []
+        return {
+            "city":       city,
+            "country":    country,
+            "localities": localities,
+            "queries":    queries,
+            "total":      len(localities),
+            "source":     localities[0]["source"] if localities else "none",
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Locality discovery failed: {exc}")
+
+
 # ---------------------------------------------------------------------------
 # Debug: inspect output files on server (requires auth + dev mode only)
 # ---------------------------------------------------------------------------
-
 @app.get("/api/debug/files")
 def debug_files(user_id: int = Depends(get_current_user_id)):
     """
