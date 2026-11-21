@@ -1,17 +1,19 @@
 """
-LLM client supporting OpenAI, Gemini, Anthropic, and mock providers.
+LLM client supporting OpenAI, Gemini, Anthropic, Dify, and mock providers.
 Configure via environment variables:
-  AI_PROVIDER = openai | gemini | anthropic | mock  (default: mock)
-  AI_MODEL    = gpt-4o-mini | gemini-1.5-flash | claude-3-haiku-... (default: gpt-4o-mini)
+  AI_PROVIDER   = openai | gemini | anthropic | dify | mock  (default: mock)
+  AI_MODEL      = gpt-4o-mini | gemini-1.5-flash | claude-3-haiku-... (default: gpt-4o-mini)
   OPENAI_API_KEY / GEMINI_API_KEY / ANTHROPIC_API_KEY
+  DIFY_API_KEY  = app-xxxxxxxxxxxxxxxxxxxx
+  DIFY_API_URL  = https://api.dify.ai/v1   (default)
 """
-from __future__ import annotations
 
 import json
 import logging
 import os
 import re
 import time
+import uuid
 from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
@@ -28,8 +30,10 @@ class LLMClient:
         self.openai_key: str = os.getenv("OPENAI_API_KEY", "")
         self.gemini_key: str = os.getenv("GEMINI_API_KEY", "")
         self.anthropic_key: str = os.getenv("ANTHROPIC_API_KEY", "")
+        self.dify_key: str = os.getenv("DIFY_API_KEY", "")
+        self.dify_url: str = os.getenv("DIFY_API_URL", "https://api.dify.ai/v1")
         self.max_retries: int = 3
-        self.timeout: int = 60
+        self.timeout: int = 120  # Dify workflows can be slower
 
     # ------------------------------------------------------------------
     # Public API
@@ -45,6 +49,8 @@ class LLMClient:
             return bool(self.gemini_key)
         if self.provider == "anthropic":
             return bool(self.anthropic_key)
+        if self.provider == "dify":
+            return bool(self.dify_key)
         return False
 
     def complete(self, prompt: str, system: str = "", temperature: float = 0.3) -> str:
@@ -60,6 +66,8 @@ class LLMClient:
                     return self._call_gemini(prompt, system, temperature)
                 if self.provider == "anthropic":
                     return self._call_anthropic(prompt, system, temperature)
+                if self.provider == "dify":
+                    return self._call_dify(prompt, system)
                 # Unknown provider → mock
                 return self._mock_response(prompt)
             except Exception as exc:
@@ -68,6 +76,65 @@ class LLMClient:
                 if attempt < self.max_retries - 1:
                     time.sleep(2 ** attempt)
         raise LLMError(f"LLM call failed after {self.max_retries} retries: {last_exc}") from last_exc
+
+    def call_dify_chatflow(self, company_name: str, website_url: str, industry: str) -> Dict[str, Any]:
+        """
+        Call the Dify Chatflow directly with structured inputs.
+        Returns parsed JSON dict from the Dify workflow answer.
+        This is preferred over complete() when provider=dify because
+        Dify chatflows accept named inputs rather than a raw prompt.
+        """
+        import requests
+
+        payload = {
+            "inputs": {
+                "company_name": company_name,
+                "website_url": website_url or "",
+                "industry": industry or "",
+            },
+            "query": f"Research {company_name} and return JSON analysis",
+            "response_mode": "blocking",
+            "conversation_id": "",
+            "user": f"leadpulse-{uuid.uuid4().hex[:8]}",
+        }
+
+        resp = requests.post(
+            f"{self.dify_url}/chat-messages",
+            headers={
+                "Authorization": f"Bearer {self.dify_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        # Dify chatflow returns the answer in data["answer"]
+        answer: str = data.get("answer", "")
+        logger.info("Dify raw answer length: %d chars", len(answer))
+
+        # Strip markdown code fences if present
+        answer = answer.strip()
+        if answer.startswith("```"):
+            lines = answer.splitlines()
+            inner = lines[1:]
+            if inner and inner[-1].strip() == "```":
+                inner = inner[:-1]
+            answer = "\n".join(inner).strip()
+
+        # Parse JSON
+        try:
+            return json.loads(answer)
+        except json.JSONDecodeError:
+            # Try to find JSON object in the response
+            match = re.search(r"\{.*\}", answer, re.DOTALL)
+            if match:
+                try:
+                    return json.loads(match.group())
+                except json.JSONDecodeError:
+                    pass
+        raise LLMError(f"Could not parse JSON from Dify response: {answer[:300]}")
 
     def complete_json(self, prompt: str, system: str = "") -> Dict[str, Any]:
         """Call the LLM and parse the JSON response."""
@@ -157,6 +224,32 @@ class LLMClient:
         )
         resp.raise_for_status()
         return resp.json()["content"][0]["text"]
+
+    def _call_dify(self, prompt: str, system: str) -> str:  # noqa: ARG002
+        """
+        Call Dify as a generic LLM (used when complete() is called with provider=dify).
+        Sends the prompt as the query. For structured company research, prefer call_dify_chatflow().
+        """
+        import requests
+
+        payload = {
+            "inputs": {},
+            "query": prompt[:4000],  # Dify query limit
+            "response_mode": "blocking",
+            "conversation_id": "",
+            "user": f"leadpulse-{uuid.uuid4().hex[:8]}",
+        }
+        resp = requests.post(
+            f"{self.dify_url}/chat-messages",
+            headers={
+                "Authorization": f"Bearer {self.dify_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        return resp.json().get("answer", "")
 
     def _mock_response(self, prompt: str) -> str:  # noqa: ARG002
         """Return a canned JSON response for testing without an API key."""

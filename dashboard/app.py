@@ -14,6 +14,14 @@ import shutil
 import subprocess
 import sys
 
+# Load .env from project root (one level up from dashboard/)
+try:
+    from dotenv import load_dotenv
+    _env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
+    load_dotenv(dotenv_path=_env_path, override=False)
+except ImportError:
+    pass  # dotenv not installed — env vars must be set manually
+
 from fastapi import FastAPI, Query, Request, File, UploadFile, Depends, status, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, FileResponse
 from fastapi.staticfiles import StaticFiles

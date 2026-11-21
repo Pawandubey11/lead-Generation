@@ -83,50 +83,12 @@ class CompanyResearchEngine:
         sources: List[str] = []
 
         try:
-            # 1. Fetch website text
-            website_text, ws_url = self._fetch_website(lead.get("website", ""))
-            if ws_url:
-                sources.append(ws_url)
-
-            # 2. Company research + website analysis (single LLM call)
-            from ai.prompts import COMPANY_RESEARCH_SYSTEM, company_research_prompt
-            step1 = self.llm.complete_json(
-                company_research_prompt(lead, website_text),
-                COMPANY_RESEARCH_SYSTEM,
-            )
-            result.update({k: v for k, v in step1.items() if k in _DEFAULTS})
-
-            # 3. Opportunity matching
-            from ai.prompts import OPPORTUNITY_MATCHING_SYSTEM, opportunity_matching_prompt
-            step2 = self.llm.complete_json(
-                opportunity_matching_prompt(lead, result),
-                OPPORTUNITY_MATCHING_SYSTEM,
-            )
-            result.update({k: v for k, v in step2.items() if k in _DEFAULTS})
-
-            # 4. Sales preparation
-            from ai.prompts import SALES_PREP_SYSTEM, sales_prep_prompt
-            step3 = self.llm.complete_json(
-                sales_prep_prompt(lead, result),
-                SALES_PREP_SYSTEM,
-            )
-            result.update({k: v for k, v in step3.items() if k in _DEFAULTS})
-
-            # 5. Outreach generation
-            from ai.prompts import OUTREACH_SYSTEM, outreach_prompt
-            step4 = self.llm.complete_json(
-                outreach_prompt(lead, result),
-                OUTREACH_SYSTEM,
-            )
-            result.update({k: v for k, v in step4.items() if k in _DEFAULTS})
-
-            # 6. Content generation
-            from ai.prompts import CONTENT_SYSTEM, content_prompt
-            step5 = self.llm.complete_json(
-                content_prompt(lead, result),
-                CONTENT_SYSTEM,
-            )
-            result.update({k: v for k, v in step5.items() if k in _DEFAULTS})
+            # ── Dify provider: single chatflow call does everything ──────────
+            if self.llm.provider == "dify" and self.llm.dify_key:
+                result = self._research_via_dify(lead, result, sources)
+            else:
+                # ── Multi-stage pipeline for all other providers ─────────────
+                result = self._research_via_llm(lead, result, sources)
 
             result["research_status"] = "completed"
             result["research_sources"] = sources
@@ -141,8 +103,120 @@ class CompanyResearchEngine:
         return result
 
     # ------------------------------------------------------------------
+    # Dify single-call path
+    # ------------------------------------------------------------------
+
+    def _research_via_dify(self, lead: dict, result: dict, sources: List[str]) -> dict:
+        """Call the Dify Chatflow — one API call returns everything."""
+        name = lead.get("business_name", "")
+        website = lead.get("website", "")
+        industry = lead.get("spin", lead.get("industry", ""))
+
+        logger.info("Calling Dify chatflow for: %s", name)
+        dify_result = self.llm.call_dify_chatflow(
+            company_name=name,
+            website_url=website,
+            industry=industry,
+        )
+
+        if website:
+            sources.append(website)
+
+        # Map Dify JSON keys → LeadPulse enrichment fields
+        # Dify returns: company_description, business_model, products_services,
+        # website_analysis, website_problems, recommended_service, opportunity_reason,
+        # confidence, opportunity_priority, systemaops_opportunity,
+        # meeting_questions, email_subject, email_body, linkedin_message, whatsapp_message
+        field_map = {
+            # Dify key              → LeadPulse enrichment key
+            "company_description":  "company_overview",
+            "business_model":       "business_model",
+            "products_services":    "products_services",
+            "website_analysis":     "website_summary",
+            "website_problems":     "website_problems",
+            "recommended_service":  "strongest_opportunity",
+            "opportunity_reason":   "opportunity_reason",
+            "confidence":           "recommendation_confidence",
+            "opportunity_priority": "opportunity_priority",
+            "systemaops_opportunity": "systemaops_business_opportunity",
+            "meeting_questions":    "discovery_questions",
+            "email_subject":        "email_subject",
+            "email_body":           "personalized_email",
+            "linkedin_message":     "linkedin_message",
+            "whatsapp_message":     "follow_up_message",
+            # pass-through keys (same name in both)
+            "industry":             "industry",
+            "technology_signals":   "technology_signals",
+        }
+
+        for dify_key, lp_key in field_map.items():
+            val = dify_result.get(dify_key)
+            if val is not None:
+                # Convert lists to readable string for CSV compatibility
+                if isinstance(val, list):
+                    val = "\n".join(f"- {q}" for q in val)
+                elif isinstance(val, (int, float)):
+                    val = str(val)
+                result[lp_key] = val
+
+        # Recommended services (use recommended_service as a list)
+        rec = dify_result.get("recommended_service", "")
+        result["recommended_services"] = rec
+
+        # Build a website status flag
+        website_analysis = dify_result.get("website_analysis", "")
+        result["website_status"] = "available" if website_analysis and len(website_analysis) > 20 else "unknown"
+
+        # Build a simple website strength / improvement block from analysis
+        result["website_strengths"] = dify_result.get("website_strengths", "")
+        result["website_improvement_opportunities"] = dify_result.get("website_improvements", "")
+        result["website_recommendations"] = dify_result.get("website_improvements", "")
+
+        # Evidence field
+        result["evidence"] = (
+            f"Dify AI analysis of {name} website and public information. "
+            f"Recommended: {rec}. Confidence: {dify_result.get('confidence', 'unknown')}."
+        )
+        result["expected_benefit"] = dify_result.get("expected_benefit", "")
+
+        return result
+
+    # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _research_via_llm(self, lead: dict, result: dict, sources: List[str]) -> dict:
+        """5-stage pipeline for OpenAI / Gemini / Anthropic / mock."""
+        website_text, ws_url = self._fetch_website(lead.get("website", ""))
+        if ws_url:
+            sources.append(ws_url)
+
+        from ai.prompts import COMPANY_RESEARCH_SYSTEM, company_research_prompt
+        step1 = self.llm.complete_json(
+            company_research_prompt(lead, website_text), COMPANY_RESEARCH_SYSTEM)
+        result.update({k: v for k, v in step1.items() if k in _DEFAULTS})
+
+        from ai.prompts import OPPORTUNITY_MATCHING_SYSTEM, opportunity_matching_prompt
+        step2 = self.llm.complete_json(
+            opportunity_matching_prompt(lead, result), OPPORTUNITY_MATCHING_SYSTEM)
+        result.update({k: v for k, v in step2.items() if k in _DEFAULTS})
+
+        from ai.prompts import SALES_PREP_SYSTEM, sales_prep_prompt
+        step3 = self.llm.complete_json(
+            sales_prep_prompt(lead, result), SALES_PREP_SYSTEM)
+        result.update({k: v for k, v in step3.items() if k in _DEFAULTS})
+
+        from ai.prompts import OUTREACH_SYSTEM, outreach_prompt
+        step4 = self.llm.complete_json(
+            outreach_prompt(lead, result), OUTREACH_SYSTEM)
+        result.update({k: v for k, v in step4.items() if k in _DEFAULTS})
+
+        from ai.prompts import CONTENT_SYSTEM, content_prompt
+        step5 = self.llm.complete_json(
+            content_prompt(lead, result), CONTENT_SYSTEM)
+        result.update({k: v for k, v in step5.items() if k in _DEFAULTS})
+
+        return result
 
     def _fetch_website(self, url: str) -> Tuple[str, str]:
         """Fetch homepage text. Returns (text[:3000], final_url)."""

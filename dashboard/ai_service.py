@@ -142,9 +142,12 @@ def llm_is_configured() -> bool:
 
 def get_ai_config() -> Dict[str, Any]:
     """Return AI configuration info (no secrets exposed)."""
+    provider = os.getenv("AI_PROVIDER", "mock").lower()
     return {
-        "provider": os.getenv("AI_PROVIDER", "mock"),
+        "provider": provider,
         "model": os.getenv("AI_MODEL", "gpt-4o-mini"),
         "configured": llm_is_configured(),
-        "mock_mode": os.getenv("AI_PROVIDER", "mock").lower() == "mock",
+        "mock_mode": provider == "mock",
+        "dify_mode": provider == "dify",
+        "dify_url": os.getenv("DIFY_API_URL", "https://api.dify.ai/v1") if provider == "dify" else None,
     }
