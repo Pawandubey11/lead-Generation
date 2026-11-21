@@ -188,10 +188,24 @@ class CompanyResearchEngine:
         # ── outreach ───────────────────────────────────────────────────
         outreach = d.get("outreach", {}) or {}
         email_obj = outreach.get("email", {}) or {}
-        result["email_subject"] = _to_str(email_obj.get("subject", d.get("email_subject", "")))
-        result["personalized_email"] = _to_str(email_obj.get("body", d.get("email_body", "")))
-        result["linkedin_message"] = _to_str(outreach.get("linkedin", d.get("linkedin_message", "")))
-        result["follow_up_message"] = _to_str(outreach.get("whatsapp", d.get("whatsapp_message", "")))
+        result["email_subject"] = _to_str(
+            email_obj.get("subject") or d.get("email_subject", ""))
+        result["personalized_email"] = _to_str(
+            email_obj.get("body") or d.get("email_body", ""))
+        # Try multiple possible key names for LinkedIn
+        result["linkedin_message"] = _to_str(
+            outreach.get("linkedin") or
+            outreach.get("linkedin_message") or
+            outreach.get("linkedin_note") or
+            d.get("linkedin_message") or
+            d.get("linkedin") or "")
+        # Try multiple possible key names for WhatsApp
+        result["follow_up_message"] = _to_str(
+            outreach.get("whatsapp") or
+            outreach.get("whatsapp_message") or
+            outreach.get("sms") or
+            d.get("whatsapp_message") or
+            d.get("whatsapp") or "")
 
         # ── meeting questions ──────────────────────────────────────────
         questions = d.get("sales_questions", d.get("meeting_questions", []))
