@@ -17,3 +17,10 @@ OUTPUT_FILE = "output/local_business_leads.csv"
 N8N_WEBHOOK_URL = os.environ.get("N8N_WEBHOOK_URL", "")
 N8N_WEBHOOK_SECRET = os.environ.get("N8N_WEBHOOK_SECRET", "")
 N8N_SEND_ON_COMPLETION = os.environ.get("N8N_SEND_ON_COMPLETION", "false").lower() == "true"
+
+# ============================================
+# LOCALITY SCRAPING CONFIG
+# ============================================
+MAX_BIZ_PER_CITY = int(os.environ.get("MAX_BIZ_PER_CITY", "20"))
+MAX_LOCALITIES   = int(os.environ.get("MAX_LOCALITIES", "30"))
+MAX_BIZ_PER_LOCALITY = int(os.environ.get("MAX_BIZ_PER_LOCALITY", str(MAX_BIZ_PER_CITY)))
