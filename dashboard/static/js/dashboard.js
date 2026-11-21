@@ -675,7 +675,7 @@ async function initAIPanel() {
 async function refreshAILeadList() {
   try {
     const data = await fetch('/api/leads?page=1&page_size=200').then(r => r.json());
-    AI.allLeads = data.leads || [];
+    AI.allLeads = data.data || data.leads || [];
     renderAILeadRows();
     document.getElementById('ai-stat-total').textContent = AI.selectedNames.size;
   } catch (e) { console.warn('AI lead list refresh error', e); }
