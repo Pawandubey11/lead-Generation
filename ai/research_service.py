@@ -1,4 +1,4 @@
-﻿"""
+"""
 Background research queue — thread-based async processing for the dashboard.
 """
 from __future__ import annotations

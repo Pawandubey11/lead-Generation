@@ -1,4 +1,4 @@
-﻿"""
+"""
 AI Business Intelligence service layer — called from dashboard/app.py endpoints.
 """
 from __future__ import annotations

@@ -1,4 +1,4 @@
-﻿"""
+"""
 Centralized LLM prompts for SystemaOps Business Intelligence.
 Each prompt function returns a string; system constants are top-level strings.
 """

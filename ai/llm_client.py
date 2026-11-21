@@ -1,4 +1,4 @@
-﻿"""
+"""
 LLM client supporting OpenAI, Gemini, Anthropic, and mock providers.
 Configure via environment variables:
   AI_PROVIDER = openai | gemini | anthropic | mock  (default: mock)

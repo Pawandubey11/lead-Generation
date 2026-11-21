@@ -1,4 +1,4 @@
-﻿"""
+"""
 app.py
 ------
 FastAPI application for the Lead Generation Dashboard.
@@ -8,9 +8,7 @@ Run with:
 (from inside the dashboard/ folder)
 """
 
-from __future__ import annotations
-
-from typing import Optional
+from typing import Optional, List
 import os
 import shutil
 import subprocess
@@ -739,10 +737,17 @@ class AIResearchRequest(BaseModel):
     """Request body for starting AI research."""
     business_names: List[str] = Field(default_factory=list, description="Names of leads to research")
 
+    model_config = {"arbitrary_types_allowed": True}
+
 
 class AIReportMarkRequest(BaseModel):
     business_name: str
     reviewed: bool = True
+
+
+# Ensure models are fully resolved (required when annotations are complex)
+AIResearchRequest.model_rebuild()
+AIReportMarkRequest.model_rebuild()
 
 
 @app.get("/api/ai/config")
@@ -824,4 +829,3 @@ def ai_export_enriched(user_id: int = Depends(require_authenticated_user)):
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=systemaops_enriched_leads.csv"},
     )
-

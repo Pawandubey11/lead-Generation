@@ -1,1 +1,1 @@
-﻿# AI Business Intelligence module for LeadPulse
+# AI Business Intelligence module for LeadPulse

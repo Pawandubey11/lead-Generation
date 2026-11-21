@@ -1,4 +1,4 @@
-﻿"""
+"""
 Company research orchestrator for SystemaOps Business Intelligence.
 Chains: web fetch → LLM research → opportunity matching → sales prep → outreach → content.
 """

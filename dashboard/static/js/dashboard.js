@@ -1,4 +1,4 @@
-﻿/**
+/**
  * LeadPulse Scraper & Verified Exporter - Client Engine
  * Streamlined Single-Page Architecture for Fast B2B Prospecting & Filtered Export
  */

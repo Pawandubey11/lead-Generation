@@ -1,4 +1,4 @@
-﻿"""
+"""
 SystemaOps service catalogue for opportunity matching.
 Based on: https://www.systemaops.com
 Pricing: $25-49/hr | Min project: ~$5,000
