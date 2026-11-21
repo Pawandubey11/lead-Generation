@@ -113,7 +113,7 @@ class CompanyResearchEngine:
         industry = lead.get("spin", lead.get("industry", ""))
 
         logger.info("Calling Dify chatflow for: %s", name)
-        dify_result = self.llm.call_dify_chatflow(
+        d = self.llm.call_dify_chatflow(
             company_name=name,
             website_url=website,
             industry=industry,
@@ -122,62 +122,107 @@ class CompanyResearchEngine:
         if website:
             sources.append(website)
 
-        # Map Dify JSON keys → LeadPulse enrichment fields
-        # Dify returns: company_description, business_model, products_services,
-        # website_analysis, website_problems, recommended_service, opportunity_reason,
-        # confidence, opportunity_priority, systemaops_opportunity,
-        # meeting_questions, email_subject, email_body, linkedin_message, whatsapp_message
-        field_map = {
-            # Dify key              → LeadPulse enrichment key
-            "company_description":  "company_overview",
-            "business_model":       "business_model",
-            "products_services":    "products_services",
-            "website_analysis":     "website_summary",
-            "website_problems":     "website_problems",
-            "recommended_service":  "strongest_opportunity",
-            "opportunity_reason":   "opportunity_reason",
-            "confidence":           "recommendation_confidence",
-            "opportunity_priority": "opportunity_priority",
-            "systemaops_opportunity": "systemaops_business_opportunity",
-            "meeting_questions":    "discovery_questions",
-            "email_subject":        "email_subject",
-            "email_body":           "personalized_email",
-            "linkedin_message":     "linkedin_message",
-            "whatsapp_message":     "follow_up_message",
-            # pass-through keys (same name in both)
-            "industry":             "industry",
-            "technology_signals":   "technology_signals",
-        }
+        def _to_str(val, sep="\n") -> str:
+            """Recursively convert any value to a readable string."""
+            if val is None:
+                return ""
+            if isinstance(val, str):
+                return val
+            if isinstance(val, (int, float)):
+                return str(val)
+            if isinstance(val, list):
+                parts = []
+                for item in val:
+                    if isinstance(item, dict):
+                        parts.append(", ".join(f"{k}: {v}" for k, v in item.items()))
+                    else:
+                        parts.append(str(item))
+                return sep.join(f"- {p}" for p in parts)
+            if isinstance(val, dict):
+                return sep.join(f"{k}: {v}" for k, v in val.items())
+            return str(val)
 
-        for dify_key, lp_key in field_map.items():
-            val = dify_result.get(dify_key)
-            if val is not None:
-                # Convert lists to readable string for CSV compatibility
-                if isinstance(val, list):
-                    val = "\n".join(f"- {q}" for q in val)
-                elif isinstance(val, (int, float)):
-                    val = str(val)
-                result[lp_key] = val
+        # ── company_profile ────────────────────────────────────────────
+        cp = d.get("company_profile", {}) or {}
+        result["company_overview"] = _to_str(cp.get("overview", ""))
+        result["business_model"] = _to_str(cp.get("business_model", ""))
+        result["products_services"] = _to_str(cp.get("products_services", []))
+        result["industry"] = _to_str(cp.get("industry", industry))
+        result["technology_signals"] = _to_str(cp.get("technology_signals", ""))
+        result["existing_capabilities"] = _to_str(cp.get("target_customers", []))
 
-        # Recommended services (use recommended_service as a list)
-        rec = dify_result.get("recommended_service", "")
-        result["recommended_services"] = rec
+        # ── website_issues ─────────────────────────────────────────────
+        wi = d.get("website_issues", {}) or {}
+        confirmed = wi.get("confirmed", []) or []
+        assumed = wi.get("assumed", []) or []
+        all_issues = confirmed + assumed
+        result["website_status"] = "available" if website else "unknown"
+        result["website_problems"] = _to_str(all_issues)
+        result["website_summary"] = _to_str(d.get("website_analysis", wi))
+        result["website_strengths"] = _to_str(wi.get("positives", []))
+        result["website_improvement_opportunities"] = _to_str(assumed[:5])
+        result["website_recommendations"] = _to_str(d.get("website_recommendations", assumed[:3]))
 
-        # Build a website status flag
-        website_analysis = dify_result.get("website_analysis", "")
-        result["website_status"] = "available" if website_analysis and len(website_analysis) > 20 else "unknown"
+        # ── recommended_services ───────────────────────────────────────
+        rec_list = d.get("recommended_services", []) or []
+        if rec_list and isinstance(rec_list[0], dict):
+            top = rec_list[0]
+            result["strongest_opportunity"] = top.get("service", "")
+            result["opportunity_reason"] = top.get("reason", "")
+            conf = top.get("confidence", 0)
+            result["recommendation_confidence"] = (
+                "HIGH" if conf >= 0.7 else "MEDIUM" if conf >= 0.4 else "LOW"
+            )
+            impact = top.get("impact", 3)
+            result["opportunity_priority"] = (
+                "HIGH" if impact >= 4 else "MEDIUM" if impact >= 2 else "LOW"
+            )
+            # All services as a summary string
+            result["recommended_services"] = _to_str(
+                [f"{r.get('service','')}: {r.get('reason','')[:80]}" for r in rec_list]
+            )
+        elif rec_list:
+            result["strongest_opportunity"] = str(rec_list[0])
+            result["recommended_services"] = _to_str(rec_list)
 
-        # Build a simple website strength / improvement block from analysis
-        result["website_strengths"] = dify_result.get("website_strengths", "")
-        result["website_improvement_opportunities"] = dify_result.get("website_improvements", "")
-        result["website_recommendations"] = dify_result.get("website_improvements", "")
+        # ── outreach ───────────────────────────────────────────────────
+        outreach = d.get("outreach", {}) or {}
+        email_obj = outreach.get("email", {}) or {}
+        result["email_subject"] = _to_str(email_obj.get("subject", d.get("email_subject", "")))
+        result["personalized_email"] = _to_str(email_obj.get("body", d.get("email_body", "")))
+        result["linkedin_message"] = _to_str(outreach.get("linkedin", d.get("linkedin_message", "")))
+        result["follow_up_message"] = _to_str(outreach.get("whatsapp", d.get("whatsapp_message", "")))
 
-        # Evidence field
-        result["evidence"] = (
-            f"Dify AI analysis of {name} website and public information. "
-            f"Recommended: {rec}. Confidence: {dify_result.get('confidence', 'unknown')}."
+        # ── meeting questions ──────────────────────────────────────────
+        questions = d.get("sales_questions", d.get("meeting_questions", []))
+        result["discovery_questions"] = _to_str(questions)
+
+        # ── opportunity summary ────────────────────────────────────────
+        result["systemaops_business_opportunity"] = _to_str(
+            d.get("systemaops_opportunity",
+                  d.get("opportunity_summary",
+                        f"{name} could benefit from {result.get('strongest_opportunity', 'SystemaOps services')}. "
+                        f"{result.get('opportunity_reason', '')}"))
         )
-        result["expected_benefit"] = dify_result.get("expected_benefit", "")
+        result["expected_benefit"] = _to_str(d.get("expected_benefit", ""))
+        result["potential_business_challenge"] = _to_str(d.get("challenges", d.get("pain_points", "")))
+
+        # ── evidence ──────────────────────────────────────────────────
+        top_svc = result.get("strongest_opportunity", "N/A")
+        conf_str = result.get("recommendation_confidence", "MEDIUM")
+        result["evidence"] = (
+            f"Dify AI analysis of {name}. "
+            f"Top recommendation: {top_svc}. Confidence: {conf_str}. "
+            f"Based on company profile and website analysis."
+        )
+
+        # ── content / sales pitch ─────────────────────────────────────
+        result["sales_pitch"] = _to_str(d.get("sales_pitch", ""))
+        result["suggested_next_action"] = _to_str(d.get("call_to_action", d.get("next_step", "")))
+        result["post_topic"] = _to_str(d.get("blog_topic", d.get("content_idea", "")))
+        result["post_text"] = _to_str(d.get("post_text", ""))
+        result["call_to_action"] = _to_str(d.get("call_to_action", ""))
+        result["meeting_opening"] = _to_str(d.get("meeting_opening", ""))
 
         return result
 
