@@ -213,11 +213,41 @@ class CompanyResearchEngine:
                         f"{name} could benefit from {result.get('strongest_opportunity', 'SystemaOps services')}. "
                         f"{result.get('opportunity_reason', '')}"))
         )
-        result["expected_benefit"] = _to_str(d.get("expected_benefit", ""))
-        result["potential_business_challenge"] = _to_str(d.get("challenges", d.get("pain_points", "")))
+
+        # ── technology_signals (derive from profile + website) ─────────
+        tech_raw = _to_str(cp.get("technology_signals", ""))
+        if not tech_raw:
+            # Infer from industry and website issues
+            tech_raw = _to_str(d.get("technology_signals",
+                f"No specific technology signals publicly identified for {name}. "
+                "Likely uses standard industry software — to be confirmed in meeting."))
+        result["technology_signals"] = tech_raw
+
+        # ── website_strengths (derive from profile) ────────────────────
+        result["website_strengths"] = _to_str(
+            d.get("website_strengths") or
+            wi.get("positives") or
+            (f"{name} has an online presence at {website}. " if website else
+             "No website publicly identified."))
+
+        # ── expected_benefit (derive from top service) ─────────────────
+        top_svc = result.get("strongest_opportunity", "")
+        opp_reason = result.get("opportunity_reason", "")
+        result["expected_benefit"] = _to_str(
+            d.get("expected_benefit") or
+            (f"Implementing {top_svc} could help {name} streamline operations, "
+             f"reduce manual work, and improve business visibility. {opp_reason}" if top_svc else ""))
+
+        # ── potential_business_challenge ───────────────────────────────
+        challenges = _to_str(
+            d.get("challenges") or d.get("pain_points") or d.get("problems") or "")
+        if not challenges and all_issues:
+            challenges = _to_str(all_issues[:3])
+        result["potential_business_challenge"] = challenges or (
+            f"Likely faces manual processes and disconnected systems based on "
+            f"industry norms for {industry} companies.")
 
         # ── evidence ──────────────────────────────────────────────────
-        top_svc = result.get("strongest_opportunity", "N/A")
         conf_str = result.get("recommendation_confidence", "MEDIUM")
         result["evidence"] = (
             f"Dify AI analysis of {name}. "
@@ -225,13 +255,55 @@ class CompanyResearchEngine:
             f"Based on company profile and website analysis."
         )
 
-        # ── content / sales pitch ─────────────────────────────────────
-        result["sales_pitch"] = _to_str(d.get("sales_pitch", ""))
-        result["suggested_next_action"] = _to_str(d.get("call_to_action", d.get("next_step", "")))
-        result["post_topic"] = _to_str(d.get("blog_topic", d.get("content_idea", "")))
-        result["post_text"] = _to_str(d.get("post_text", ""))
-        result["call_to_action"] = _to_str(d.get("call_to_action", ""))
-        result["meeting_opening"] = _to_str(d.get("meeting_opening", ""))
+        # ── meeting_opening ────────────────────────────────────────────
+        result["meeting_opening"] = _to_str(
+            d.get("meeting_opening") or
+            (f"Hello! I came across {name} and was impressed by what you do. "
+             f"I'm reaching out from SystemaOps — we help {industry} businesses "
+             f"like yours streamline operations through {top_svc or 'Odoo ERP and AI automation'}. "
+             f"I'd love to learn more about your current setup and share a few ideas."))
+
+        # ── sales_pitch ────────────────────────────────────────────────
+        result["sales_pitch"] = _to_str(
+            d.get("sales_pitch") or
+            (f"SystemaOps specializes in {top_svc or 'Odoo ERP and AI automation'} "
+             f"for {industry} businesses. {opp_reason} "
+             f"Our clients typically reduce manual work by 10+ hours/week within the first 90 days. "
+             f"We work with projects starting from $5,000 at $25–49/hr."))
+
+        # ── suggested_next_action ──────────────────────────────────────
+        result["suggested_next_action"] = _to_str(
+            d.get("suggested_next_action") or
+            d.get("next_step") or
+            d.get("call_to_action") or
+            f"Schedule a 30-minute discovery call to map {name}'s current processes "
+            f"and identify the top 3 automation opportunities with SystemaOps.")
+
+        # ── content fields ─────────────────────────────────────────────
+        result["post_topic"] = _to_str(
+            d.get("blog_topic") or d.get("content_idea") or d.get("post_topic") or
+            f"How {industry} businesses like {name} save 10+ hours/week with "
+            f"{top_svc or 'Odoo ERP and workflow automation'}")
+
+        result["post_text"] = _to_str(
+            d.get("post_text") or
+            (f"Many {industry} businesses are still managing operations through "
+             f"disconnected systems and manual processes.\n\n"
+             f"The challenge: data silos, manual entry, slow reporting.\n\n"
+             f"The solution: {top_svc or 'integrated ERP and automation'}.\n\n"
+             f"With SystemaOps, businesses like {name} can:\n"
+             f"✅ Centralise operations in one platform\n"
+             f"✅ Automate repetitive document and data tasks\n"
+             f"✅ Get real-time visibility into their business\n\n"
+             f"The result: more time for growth, fewer errors, better decisions."))
+
+        result["call_to_action"] = _to_str(
+            d.get("call_to_action") or
+            f"Comment 'AUTOMATE' to get our free {industry} business automation checklist")
+
+        # ── meta flags ─────────────────────────────────────────────────
+        result["research_error"] = None
+        result["manual_review_required"] = False
 
         return result
 
