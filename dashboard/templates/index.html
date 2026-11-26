@@ -188,6 +188,35 @@
             <tbody id="coverage-table-body"></tbody>
           </table>
         </div>
+
+        <!-- Real-Time Extracted Businesses for Selected / Active Locality -->
+        <div id="coverage-live-records-wrap" style="display:none; margin-top:1.15rem; padding-top:1rem; border-top:1px solid #334155;">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem; margin-bottom:0.75rem;">
+            <div style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
+              <span style="font-size:0.85rem; font-weight:700; color:#38bdf8;">📋 Extracted Businesses:</span>
+              <span id="coverage-selected-locality-name" style="font-size:0.85rem; font-weight:700; color:#fff; background:rgba(56,189,248,0.15); border:1px solid rgba(56,189,248,0.35); padding:0.15rem 0.6rem; border-radius:999px;">—</span>
+              <span id="coverage-selected-locality-count" style="font-size:0.78rem; color:#94A3B8;">0 records</span>
+            </div>
+            <button id="btn-follow-active-locality" class="btn btn-secondary btn-sm" style="font-size:0.72rem; padding:0.25rem 0.6rem;" onclick="window.LeadScraperApp.followActiveLocality()">
+              🔄 Follow Active Locality
+            </button>
+          </div>
+          <div style="max-height:320px; overflow-y:auto; overflow-x:auto; border:1px solid #1e293b; border-radius:0.5rem; background:rgba(15,23,42,0.5);">
+            <table style="width:100%; font-size:0.78rem; border-collapse:collapse; color:#cbd5e1;">
+              <thead style="position:sticky; top:0; background:#0f172a; z-index:2;">
+                <tr style="border-bottom:1px solid #334155; color:#94A3B8;">
+                  <th style="text-align:left; padding:0.45rem 0.6rem;">Business Name</th>
+                  <th style="text-align:left; padding:0.45rem 0.6rem;">Category</th>
+                  <th style="text-align:left; padding:0.45rem 0.6rem;">Address</th>
+                  <th style="text-align:left; padding:0.45rem 0.6rem;">Phone</th>
+                  <th style="text-align:left; padding:0.45rem 0.6rem;">Website</th>
+                  <th style="text-align:right; padding:0.45rem 0.6rem;">Rating</th>
+                </tr>
+              </thead>
+              <tbody id="coverage-live-records-body"></tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </section>
 

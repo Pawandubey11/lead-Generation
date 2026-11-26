@@ -764,19 +764,138 @@
     state.scraper.pollingInterval = setInterval(checkScraperStatus, 1000);
   }
 
+  const coverageState = {
+    selectedLocality: null,
+    followActive: true,
+    lastStatus: null,
+  };
+
+  function selectCoverageLocality(loc) {
+    coverageState.selectedLocality = loc;
+    coverageState.followActive = false;
+    if (coverageState.lastStatus) {
+      renderCoveragePanel(coverageState.lastStatus);
+    }
+  }
+
+  function followActiveLocality() {
+    coverageState.followActive = true;
+    if (coverageState.lastStatus) {
+      renderCoveragePanel(coverageState.lastStatus);
+    }
+  }
+
+  function renderCoverageLiveRecords(s, activeLocality, completed, localities) {
+    const wrap = document.getElementById('coverage-live-records-wrap');
+    const tbody = document.getElementById('coverage-live-records-body');
+    const nameBadge = document.getElementById('coverage-selected-locality-name');
+    const countLabel = document.getElementById('coverage-selected-locality-count');
+    const followBtn = document.getElementById('btn-follow-active-locality');
+    if (!wrap || !tbody) return;
+
+    let targetLoc = null;
+    if (coverageState.followActive && activeLocality) {
+      targetLoc = activeLocality;
+    } else if (coverageState.selectedLocality) {
+      targetLoc = coverageState.selectedLocality;
+    } else if (activeLocality) {
+      targetLoc = activeLocality;
+    } else if (completed && completed.length > 0) {
+      targetLoc = completed[completed.length - 1];
+    } else if (localities && localities.length > 0) {
+      targetLoc = localities[0];
+    } else if (s.current_city) {
+      targetLoc = s.current_city;
+    }
+
+    if (!targetLoc) {
+      wrap.style.display = 'none';
+      return;
+    }
+    coverageState.selectedLocality = targetLoc;
+    wrap.style.display = 'block';
+
+    if (nameBadge) {
+      const isLive = (s.state === 'running' && targetLoc === activeLocality);
+      nameBadge.textContent = isLive ? `${targetLoc} (Live)` : targetLoc;
+    }
+    if (followBtn) {
+      followBtn.style.display = (s.state === 'running' && activeLocality && !coverageState.followActive) ? 'inline-flex' : 'none';
+    }
+
+    const locLeadsMap = s.locality_leads || {};
+    let records = locLeadsMap[targetLoc];
+    if (!records) {
+      const lowerTarget = targetLoc.toLowerCase();
+      for (const [k, v] of Object.entries(locLeadsMap)) {
+        if (k.toLowerCase() === lowerTarget) {
+          records = v;
+          break;
+        }
+      }
+    }
+    // Fallback to persisted state.leads after refresh
+    if ((!records || records.length === 0) && state.leads && state.leads.length > 0) {
+      const lowerTarget = targetLoc.toLowerCase();
+      records = state.leads.filter(l =>
+        (l.locality || '').toLowerCase() === lowerTarget ||
+        (!l.locality && (l.city || '').toLowerCase() === lowerTarget)
+      );
+    }
+    records = records || [];
+
+    if (countLabel) {
+      countLabel.textContent = `${records.length} record${records.length === 1 ? '' : 's'}`;
+    }
+
+    if (records.length === 0) {
+      const waitingMsg = (s.state === 'running' && targetLoc === activeLocality)
+        ? `🔄 Extracting businesses in ${escapeHtml(targetLoc)}… records will appear here as soon as they are extracted.`
+        : `No businesses extracted yet for ${escapeHtml(targetLoc)}.`;
+      tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding:1.25rem; color:#94A3B8;">${waitingMsg}</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = records.map(r => {
+      const nameHtml = r.source_url
+        ? `<a href="${escapeHtml(r.source_url)}" target="_blank" rel="noopener" style="color:#e2e8f0; font-weight:600; text-decoration:none;" title="Open in Google Maps">${escapeHtml(r.business_name || '—')} <span style="color:#38bdf8;font-size:0.7rem;">🗺️</span></a>`
+        : `<span style="color:#e2e8f0; font-weight:600;">${escapeHtml(r.business_name || '—')}</span>`;
+      const cat = r.business_type ? escapeHtml(r.business_type) : '<span style="color:#475569;">—</span>';
+      const addr = r.address ? escapeHtml(r.address) : '<span style="color:#475569;">—</span>';
+      const phone = r.phone ? `<span style="white-space:nowrap;">${escapeHtml(r.phone)}</span>` : '<span style="color:#475569;">—</span>';
+      const web = r.website
+        ? `<a href="${escapeHtml(r.website.startsWith('http') ? r.website : 'https://' + r.website)}" target="_blank" rel="noopener" style="color:#38bdf8; text-decoration:underline; word-break:break-all;">${escapeHtml(r.website.replace(/^https?:\/\/(www\.)?/, '').slice(0, 28))}</a>`
+        : '<span style="color:#475569;">—</span>';
+      const ratingText = r.rating
+        ? `⭐ ${escapeHtml(String(r.rating))}${r.reviews ? ` <span style="color:#94A3B8;">(${escapeHtml(String(r.reviews))})</span>` : ''}`
+        : '<span style="color:#475569;">—</span>';
+
+      return `<tr style="border-bottom:1px solid #1e293b;">
+        <td style="padding:0.45rem 0.6rem;">${nameHtml}</td>
+        <td style="padding:0.45rem 0.6rem; color:#94A3B8;">${cat}</td>
+        <td style="padding:0.45rem 0.6rem; color:#94A3B8; max-width:220px;">${addr}</td>
+        <td style="padding:0.45rem 0.6rem; color:#cbd5e1;">${phone}</td>
+        <td style="padding:0.45rem 0.6rem;">${web}</td>
+        <td style="padding:0.45rem 0.6rem; text-align:right; color:#fbbf24; white-space:nowrap;">${ratingText}</td>
+      </tr>`;
+    }).join('');
+  }
+
   function renderCoveragePanel(s) {
+    coverageState.lastStatus = s;
     const panel = document.getElementById('coverage-panel');
     if (!panel) return;
     const localities = s.localities || [];
     const completed = s.localities_completed || [];
     const failed = s.localities_failed || [];
-    const inProgress = (s.state === 'running') ? (s.current_locality || '') : '';
+    const inProgress = (s.state === 'running') ? (s.current_locality || s.current_city || '') : '';
     const leadCounts = s.locality_lead_counts || {};
     const total = localities.length;
-    const coveragePct = total > 0 ? Math.round((completed.length / total) * 100) : 0;
+    const hasLiveCityLeads = (s.live_leads && s.live_leads.length > 0);
+    const coveragePct = total > 0 ? Math.round((completed.length / total) * 100) : (s.progress_pct || 0);
     const pending = localities.filter(l => !completed.includes(l) && !failed.includes(l) && l !== inProgress);
 
-    if (!s.is_locality_mode && total === 0) { panel.style.display = 'none'; return; }
+    if (!s.is_locality_mode && total === 0 && !hasLiveCityLeads) { panel.style.display = 'none'; return; }
     panel.style.display = 'block';
 
     const setText = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
@@ -790,34 +909,51 @@
     const bar = document.getElementById('coverage-progress-bar');
     if (bar) bar.style.width = `${coveragePct}%`;
 
+    renderCoverageLiveRecords(s, inProgress, completed, localities);
+    const activeTarget = coverageState.selectedLocality;
+
     const grid = document.getElementById('coverage-locality-grid');
-    if (grid && total > 0) {
-      grid.innerHTML = localities.map(loc => {
-        let bg = '#1e293b', border = '#334155', color = '#94A3B8', emoji = '⏳';
-        if (completed.includes(loc)) { bg = '#14532d33'; border = '#22c55e'; color = '#22c55e'; emoji = '✅'; }
-        else if (failed.includes(loc)) { bg = '#7f1d1d33'; border = '#ef4444'; color = '#ef4444'; emoji = '❌'; }
-        else if (loc === inProgress) { bg = '#78350f33'; border = '#f59e0b'; color = '#f59e0b'; emoji = '🔄'; }
-        const count = leadCounts[loc] !== undefined ? ` (${leadCounts[loc]})` : '';
-        return `<span style="display:inline-flex;align-items:center;gap:0.3rem;padding:0.25rem 0.6rem;border-radius:999px;font-size:0.75rem;border:1px solid ${border};background:${bg};color:${color};">${emoji} ${escapeHtml(loc)}${count}</span>`;
-      }).join('');
+    if (grid) {
+      if (total > 0) {
+        grid.innerHTML = localities.map(loc => {
+          let bg = '#1e293b', border = '#334155', color = '#94A3B8', emoji = '⏳';
+          if (completed.includes(loc)) { bg = '#14532d33'; border = '#22c55e'; color = '#22c55e'; emoji = '✅'; }
+          else if (failed.includes(loc)) { bg = '#7f1d1d33'; border = '#ef4444'; color = '#ef4444'; emoji = '❌'; }
+          else if (loc === inProgress) { bg = '#78350f33'; border = '#f59e0b'; color = '#f59e0b'; emoji = '🔄'; }
+          const isSelected = (activeTarget && loc.toLowerCase() === activeTarget.toLowerCase());
+          const outline = isSelected ? 'box-shadow:0 0 0 2px #38bdf8;' : '';
+          const count = leadCounts[loc] !== undefined ? ` (${leadCounts[loc]})` : '';
+          const safeLocArg = escapeHtml(loc).replace(/'/g, '&#39;');
+          return `<button type="button" onclick="window.LeadScraperApp.selectCoverageLocality('${safeLocArg}')" style="cursor:pointer;display:inline-flex;align-items:center;gap:0.3rem;padding:0.25rem 0.6rem;border-radius:999px;font-size:0.75rem;border:1px solid ${border};background:${bg};color:${color};${outline}">${emoji} ${escapeHtml(loc)}${count}</button>`;
+        }).join('');
+      } else {
+        grid.innerHTML = '';
+      }
     }
 
     const tableWrap = document.getElementById('coverage-table-wrap');
     const tbody = document.getElementById('coverage-table-body');
-    if (tbody && total > 0) {
-      tableWrap.style.display = 'block';
-      tbody.innerHTML = localities.map(loc => {
-        let statusBadge = '<span style="color:#94A3B8;">⏳ Pending</span>';
-        if (completed.includes(loc)) statusBadge = '<span style="color:#22c55e;">✅ Completed</span>';
-        else if (failed.includes(loc)) statusBadge = '<span style="color:#ef4444;">❌ Failed</span>';
-        else if (loc === inProgress) statusBadge = '<span style="color:#f59e0b;">🔄 In Progress</span>';
-        const count = leadCounts[loc] !== undefined ? leadCounts[loc] : '—';
-        return `<tr style="border-bottom:1px solid #1e293b;">
-          <td style="padding:0.35rem 0.5rem;">${escapeHtml(loc)}</td>
-          <td style="text-align:center;padding:0.35rem 0.5rem;">${statusBadge}</td>
-          <td style="text-align:right;padding:0.35rem 0.5rem;color:#38bdf8;font-weight:600;">${count}</td>
-        </tr>`;
-      }).join('');
+    if (tbody) {
+      if (total > 0) {
+        tableWrap.style.display = 'block';
+        tbody.innerHTML = localities.map(loc => {
+          let statusBadge = '<span style="color:#94A3B8;">⏳ Pending</span>';
+          if (completed.includes(loc)) statusBadge = '<span style="color:#22c55e;">✅ Completed</span>';
+          else if (failed.includes(loc)) statusBadge = '<span style="color:#ef4444;">❌ Failed</span>';
+          else if (loc === inProgress) statusBadge = '<span style="color:#f59e0b;">🔄 In Progress</span>';
+          const count = leadCounts[loc] !== undefined ? leadCounts[loc] : '—';
+          const isSelected = (activeTarget && loc.toLowerCase() === activeTarget.toLowerCase());
+          const rowBg = isSelected ? 'background:rgba(56,189,248,0.12);' : '';
+          const safeLocArg = escapeHtml(loc).replace(/'/g, '&#39;');
+          return `<tr onclick="window.LeadScraperApp.selectCoverageLocality('${safeLocArg}')" style="cursor:pointer;border-bottom:1px solid #1e293b;${rowBg}" title="Click to view extracted businesses in ${escapeHtml(loc)}">
+            <td style="padding:0.35rem 0.5rem;font-weight:${isSelected ? '700' : '400'};color:${isSelected ? '#38bdf8' : 'inherit'};">${escapeHtml(loc)}</td>
+            <td style="text-align:center;padding:0.35rem 0.5rem;">${statusBadge}</td>
+            <td style="text-align:right;padding:0.35rem 0.5rem;color:#38bdf8;font-weight:600;">${count}</td>
+          </tr>`;
+        }).join('');
+      } else {
+        tableWrap.style.display = 'none';
+      }
     }
   }
 
@@ -827,7 +963,7 @@
       const s = await res.json();
 
       const running = s.state === 'running' || s.state === 'stopping';
-      if (s.is_locality_mode || (s.localities && s.localities.length > 0)) {
+      if (s.is_locality_mode || (s.localities && s.localities.length > 0) || (s.live_leads && s.live_leads.length > 0)) {
         renderCoveragePanel(s);
       }
 
@@ -911,6 +1047,8 @@
     selectAllBatches,
     onBatchSelectChange,
     clearAllLeads,
+    selectCoverageLocality,
+    followActiveLocality,
   };
 
   document.addEventListener('DOMContentLoaded', init);

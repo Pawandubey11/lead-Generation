@@ -754,9 +754,45 @@ def scrape_coverage():
         "in_progress": in_progress,
         "pending": pending,
         "lead_counts": lead_counts,
+        "locality_leads": s.get("locality_leads", {}),
+        "live_leads": s.get("live_leads", []),
         "total": total,
         "coverage_pct": coverage_pct,
         "state": s.get("state", "idle"),
+    }
+
+
+@app.get("/api/scrape/coverage/locality/{locality_name}")
+def scrape_coverage_locality(locality_name: str):
+    """Return live extracted records for a specific locality, with CSV fallback after refresh."""
+    s = scraper_service.get_scrape_status()
+    loc_leads = s.get("locality_leads", {})
+    records = loc_leads.get(locality_name)
+    if records is None:
+        # Case-insensitive lookup
+        target = locality_name.strip().lower()
+        for k, v in loc_leads.items():
+            if k.strip().lower() == target:
+                records = v
+                break
+    if not records:
+        # Persistence fallback from saved CSV
+        df = svc.load_leads()
+        if df is not None and not df.empty:
+            target = locality_name.strip().lower()
+            if "locality" in df.columns:
+                sub = df[df["locality"].astype(str).str.strip().str.lower() == target]
+            else:
+                sub = df.iloc[0:0]
+            if sub.empty and "city" in df.columns:
+                sub = df[df["city"].astype(str).str.strip().str.lower() == target]
+            records = sub.to_dict(orient="records")
+        else:
+            records = []
+    return {
+        "locality": locality_name,
+        "count": len(records),
+        "leads": records,
     }
 
 

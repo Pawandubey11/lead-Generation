@@ -1102,6 +1102,21 @@ def scrape_city(business_type, city, p, browser, page, partial_save_callback=Non
         if lead and any([lead["business_name"], lead["phone"], lead["website"], lead["address"]]):
             lead["city"] = city
             city_leads.append(lead)
+            _notify("business_item", {
+                "city": city,
+                "business_index": idx + 1,
+                "total_businesses": len(business_links),
+                "lead": {
+                    "business_name": lead.get("business_name", ""),
+                    "business_type": lead.get("business_type", ""),
+                    "address": lead.get("address", ""),
+                    "phone": lead.get("phone", ""),
+                    "website": lead.get("website", ""),
+                    "rating": lead.get("rating", ""),
+                    "reviews": lead.get("reviews", ""),
+                    "source_url": lead.get("source_url", ""),
+                },
+            })
             if len(city_leads) % 3 == 0 and partial_save_callback:
                 partial_save_callback(city_leads, idx + 1, len(business_links))
         else:

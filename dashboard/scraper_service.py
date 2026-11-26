@@ -81,6 +81,8 @@ _status: Dict[str, Any] = {
     "localities_completed": [],
     "localities_failed": [],
     "locality_lead_counts": {},
+    "locality_leads": {},
+    "live_leads": [],
     # Stage performance metrics
     "metrics": {},
 }
@@ -129,6 +131,8 @@ def _reset_status():
         "localities_completed": [],
         "localities_failed": [],
         "locality_lead_counts": {},
+        "locality_leads": {},
+        "live_leads": [],
         "metrics": {},
     })
     _log_buffer = deque(maxlen=MAX_LOG_LINES)
@@ -190,6 +194,40 @@ def _progress_callback(event_type: str, data: dict):
         elif event_type == "business_progress":
             _status["current_business_index"] = data.get("business_index", 0)
             _status["total_businesses"] = data.get("total_businesses", 0)
+
+        elif event_type == "business_item":
+            lead = dict(data.get("lead") or {})
+            if lead.get("business_name") or lead.get("phone") or lead.get("website"):
+                area_key = (
+                    _status["current_locality"]
+                    if (_status["is_locality_mode"] and _status["current_locality"])
+                    else (data.get("city") or _status["current_city"] or "General")
+                )
+                lead["locality"] = area_key
+                bucket = _status["locality_leads"].setdefault(area_key, [])
+                dedup_sig = (
+                    str(lead.get("business_name", "")).strip().lower(),
+                    str(lead.get("source_url", "")).strip().lower(),
+                )
+                exists_in_bucket = any(
+                    (str(x.get("business_name", "")).strip().lower(), str(x.get("source_url", "")).strip().lower()) == dedup_sig
+                    for x in bucket
+                )
+                if not exists_in_bucket:
+                    bucket.append(lead)
+                _status["locality_lead_counts"][area_key] = len(bucket)
+
+                exists_in_live = any(
+                    (str(x.get("business_name", "")).strip().lower(), str(x.get("source_url", "")).strip().lower()) == dedup_sig
+                    and str(x.get("locality", "")).strip().lower() == area_key.lower()
+                    for x in _status["live_leads"]
+                )
+                if not exists_in_live:
+                    _status["live_leads"].append(lead)
+                _status["total_leads_found"] = max(_status["total_leads_found"], len(_status["live_leads"]))
+
+            _status["current_business_index"] = data.get("business_index", _status["current_business_index"])
+            _status["total_businesses"] = data.get("total_businesses", _status["total_businesses"])
 
         elif event_type == "lead_extracted":
             _status["current_business_index"] = data.get("business_index", 0)
