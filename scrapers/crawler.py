@@ -368,6 +368,7 @@ def launch_browser(p):
             "--disable-sync",
             "--no-first-run",
             "--mute-audio",
+            "--blink-settings=imagesEnabled=false",
             "--lang=en-IN",
         ]
     )
@@ -387,7 +388,7 @@ def _route_block_heavy(route):
         return route.continue_()
 
 
-def new_context(browser, inject_cookies: bool = True, block_heavy: bool = True):
+def new_context(browser, inject_cookies: bool = True, block_heavy: bool = False):
     context = browser.new_context(
         viewport={"width": 1280, "height": 800},
         user_agent=(
@@ -411,7 +412,7 @@ def new_context(browser, inject_cookies: bool = True, block_heavy: bool = True):
     return context
 
 
-def new_page(browser, inject_cookies: bool = True, block_heavy: bool = True):
+def new_page(browser, inject_cookies: bool = True, block_heavy: bool = False):
     """Create a context+page with resource blocking and optional cookies."""
     ctx = new_context(browser, inject_cookies=inject_cookies, block_heavy=block_heavy)
     return ctx.new_page()
@@ -947,7 +948,7 @@ def scrape_city(business_type, city, p, browser, page, partial_save_callback=Non
             page = new_page(browser, inject_cookies=False)
 
         try:
-            page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
+            page.goto(search_url, wait_until="domcontentloaded", timeout=35000)
         except Exception as nav_err:
             # Retry once cleanly without cookies if connection closed/timed out
             if "ERR_CONNECTION_CLOSED" in str(nav_err) or "Timeout" in str(nav_err):
@@ -960,7 +961,7 @@ def scrape_city(business_type, city, p, browser, page, partial_save_callback=Non
                 except Exception:
                     pass
                 page = new_page(browser, inject_cookies=False)
-                page.goto(search_url, wait_until="domcontentloaded", timeout=25000)
+                page.goto(search_url, wait_until="domcontentloaded", timeout=35000)
             else:
                 raise
 
@@ -1113,7 +1114,7 @@ def scrape_city(business_type, city, p, browser, page, partial_save_callback=Non
         if (idx + 1) % 10 == 0:
             try:
                 old_ctx = page.context
-                page = new_page(browser, inject_cookies=True, block_heavy=True)
+                page = new_page(browser, inject_cookies=True, block_heavy=False)
                 old_ctx.close()
             except Exception:
                 pass
