@@ -190,6 +190,7 @@ class ScrapeRequest(BaseModel):
     max_leads_per_city: int = Field(default=20, ge=1, le=200)
     localities: Optional[List[str]] = None
     city: Optional[str] = None
+    discovery_provider: str = "playwright"  # playwright | places | hybrid
 
 class AuthRequest(BaseModel):
     email: str = Field(min_length=3, max_length=254)
@@ -687,7 +688,23 @@ def scrape_start(req: ScrapeRequest, user_id: int = Depends(get_current_user_id)
         max_cities=req.max_cities,
         max_leads_per_city=req.max_leads_per_city,
         localities=localities,
+        discovery_provider=req.discovery_provider,
     )
+
+
+@app.get("/api/scrape/providers")
+def scrape_providers():
+    """Report available discovery providers without exposing credentials."""
+    from scrapers.google_places_provider import is_google_places_configured
+    places_ok = is_google_places_configured()
+    return {
+        "default": "playwright",
+        "providers": [
+            {"id": "playwright", "name": "Google Maps + OSM Locality (Playwright)", "configured": True},
+            {"id": "places", "name": "Google Places API v1 (Optional)", "configured": places_ok},
+            {"id": "hybrid", "name": "Hybrid (Places API + Playwright)", "configured": places_ok},
+        ],
+    }
 
 
 @app.get("/api/scrape/status")
@@ -890,3 +907,226 @@ def ai_export_enriched(user_id: int = Depends(require_authenticated_user)):
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=systemaops_enriched_leads.csv"},
     )
+
+
+# ===========================================================================
+# Phase 2/3: Website Auditing, Explainable Opportunity Score, CRM & Analytics
+# ===========================================================================
+
+import crm_service as crm_svc  # noqa: E402
+from auditing.website_auditor import audit_website  # noqa: E402
+from scoring.opportunity_scorer import compute_opportunity_score  # noqa: E402
+from scrapers.email_verifier import verify_email_mx  # noqa: E402
+
+
+class LeadAuditRequest(BaseModel):
+    business_name: str
+    run_pagespeed: bool = False
+    check_mx: bool = True
+    check_links: bool = True
+
+
+class CRMUpdateRequest(BaseModel):
+    stage: Optional[str] = None
+    owner: Optional[str] = None
+    follow_up_date: Optional[str] = None
+    notes: Optional[str] = None
+    estimated_value: Optional[float] = None
+    mark_contacted: bool = False
+
+
+class CRMActivityRequest(BaseModel):
+    activity_type: str = "note"
+    note: str
+
+
+LeadAuditRequest.model_rebuild()
+CRMUpdateRequest.model_rebuild()
+CRMActivityRequest.model_rebuild()
+
+
+@app.post("/api/leads/audit")
+def api_run_lead_audit(req: LeadAuditRequest, user_id: int = Depends(get_current_user_id)):
+    """Run quantitative technical website audit + MX check + explainable opportunity score."""
+    df = svc.load_leads()
+    if df is None or df.empty:
+        raise HTTPException(status_code=404, detail="No leads loaded")
+
+    match = df[df["business_name"].str.strip().str.lower() == req.business_name.strip().lower()]
+    if match.empty:
+        raise HTTPException(status_code=404, detail=f"Lead '{req.business_name}' not found")
+
+    lead = match.iloc[0].to_dict()
+    audit_res = audit_website(
+        lead.get("website"),
+        run_pagespeed=req.run_pagespeed,
+        check_links=req.check_links,
+    )
+    mx_res = verify_email_mx(lead.get("email"), lookup_dns=req.check_mx)
+    ai_rep = ai_svc.get_company_report(lead["business_name"])
+    opp_res = compute_opportunity_score(lead, audit=audit_res, ai_report=ai_rep)
+
+    crm_svc.save_lead_audit(lead["business_name"], audit_res, opp_res, mx_res)
+    return {
+        "business_name": lead["business_name"],
+        "audit": audit_res,
+        "mx": mx_res,
+        "opportunity": opp_res,
+    }
+
+
+@app.get("/api/leads/audit/{business_name}")
+def api_get_lead_audit(business_name: str, user_id: int = Depends(get_current_user_id)):
+    """Get cached website audit + opportunity score, or compute baseline score if not audited yet."""
+    cached = crm_svc.get_lead_audit(business_name)
+    if cached:
+        return cached
+
+    df = svc.load_leads()
+    if df is None or df.empty:
+        raise HTTPException(status_code=404, detail="No leads loaded")
+    match = df[df["business_name"].str.strip().str.lower() == business_name.strip().lower()]
+    if match.empty:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    lead = match.iloc[0].to_dict()
+    ai_rep = ai_svc.get_company_report(lead["business_name"])
+    opp_res = compute_opportunity_score(lead, audit=None, ai_report=ai_rep)
+    return {
+        "business_name": lead["business_name"],
+        "audit": None,
+        "mx": None,
+        "opportunity": opp_res,
+        "updated_at": None,
+    }
+
+
+@app.get("/api/leads/opportunity-scores")
+def api_batch_opportunity_scores(
+    limit: int = Query(100, ge=1, le=500),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Compute/retrieve explainable SystemaOps Business Opportunity Scores for leads."""
+    df = svc.load_leads()
+    if df is None or df.empty:
+        return {"total": 0, "scores": []}
+
+    audits_map = crm_svc.get_all_audits_map()
+    ai_reports = ai_svc.get_all_reports() or {}
+    scores = []
+    for rec in df.head(limit).to_dict(orient="records"):
+        name = str(rec.get("business_name") or "").strip()
+        cached = audits_map.get(name.lower())
+        audit_obj = cached.get("audit") if cached else None
+        opp = (
+            cached["opportunity"]
+            if cached and cached.get("opportunity")
+            else compute_opportunity_score(rec, audit=audit_obj, ai_report=ai_reports.get(name))
+        )
+        scores.append(opp)
+    scores.sort(key=lambda x: -x.get("opportunity_score", 0))
+    return {"total": len(scores), "scores": scores}
+
+
+@app.get("/api/crm/leads")
+def api_crm_leads(
+    stage: Optional[str] = Query(None),
+    limit: int = Query(200, ge=1, le=2000),
+    user_id: int = Depends(get_current_user_id),
+):
+    """List leads enriched with CRM pipeline stage, owner, follow-up, and opportunity score."""
+    df = svc.load_leads()
+    if df is None or df.empty:
+        return {"stages": crm_svc.CRM_STAGES, "total": 0, "leads": []}
+
+    crm_map = crm_svc.get_all_crm_map()
+    audits_map = crm_svc.get_all_audits_map()
+    ai_reports = ai_svc.get_all_reports() or {}
+
+    out = []
+    for rec in df.head(limit).to_dict(orient="records"):
+        name = str(rec.get("business_name") or "").strip()
+        key = name.lower()
+        crm_rec = crm_map.get(key, {})
+        cur_stage = crm_rec.get("stage") or "New"
+        if stage and stage.lower() != "all" and cur_stage.lower() != stage.lower():
+            continue
+        cached = audits_map.get(key)
+        opp = (
+            cached["opportunity"]
+            if cached and cached.get("opportunity")
+            else compute_opportunity_score(rec, audit=(cached or {}).get("audit"), ai_report=ai_reports.get(name))
+        )
+        out.append({
+            "business_name": name,
+            "city": rec.get("city", ""),
+            "locality": rec.get("locality", ""),
+            "business_type": rec.get("business_type", ""),
+            "phone": rec.get("phone", ""),
+            "email": rec.get("email", ""),
+            "website": rec.get("website", ""),
+            "rating": rec.get("rating", ""),
+            "reviews": rec.get("reviews", ""),
+            "lead_score": rec.get("lead_score", 0),
+            "priority": rec.get("priority", "Cold"),
+            "opportunity_score": opp.get("opportunity_score", 0),
+            "opportunity_grade": opp.get("opportunity_grade", "C"),
+            "data_confidence": opp.get("confidence_label", "LOW"),
+            "pitch_focus": opp.get("pitch_focus", ""),
+            "stage": cur_stage,
+            "owner": crm_rec.get("owner", ""),
+            "follow_up_date": crm_rec.get("follow_up_date", ""),
+            "notes": crm_rec.get("notes", ""),
+            "last_contacted_at": crm_rec.get("last_contacted_at", ""),
+            "estimated_value": crm_rec.get("estimated_value", 0),
+            "has_audit": bool(cached and cached.get("audit")),
+        })
+
+    return {"stages": crm_svc.CRM_STAGES, "total": len(out), "leads": out}
+
+
+@app.get("/api/crm/lead/{business_name}")
+def api_crm_lead_detail(business_name: str, user_id: int = Depends(get_current_user_id)):
+    """Return CRM pipeline record, activity history, cached audit, and opportunity score."""
+    crm_rec = crm_svc.get_crm_record(business_name)
+    audit_bundle = api_get_lead_audit(business_name, user_id=user_id)
+    return {
+        "stages": crm_svc.CRM_STAGES,
+        "crm": crm_rec,
+        "audit": audit_bundle.get("audit"),
+        "mx": audit_bundle.get("mx"),
+        "opportunity": audit_bundle.get("opportunity"),
+    }
+
+
+@app.patch("/api/crm/lead/{business_name}")
+def api_crm_update_lead(business_name: str, req: CRMUpdateRequest, user_id: int = Depends(get_current_user_id)):
+    """Update CRM stage, owner, follow-up date, notes, or estimated value."""
+    try:
+        updated = crm_svc.update_crm_record(
+            business_name=business_name,
+            stage=req.stage,
+            owner=req.owner,
+            follow_up_date=req.follow_up_date,
+            notes=req.notes,
+            estimated_value=req.estimated_value,
+            mark_contacted=req.mark_contacted,
+        )
+        return {"success": True, "crm": updated}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/crm/lead/{business_name}/activity")
+def api_crm_add_activity(business_name: str, req: CRMActivityRequest, user_id: int = Depends(get_current_user_id)):
+    """Log an activity or note against a business lead."""
+    if not req.note.strip():
+        raise HTTPException(status_code=400, detail="Activity note cannot be empty")
+    updated = crm_svc.add_crm_activity(business_name, req.activity_type, req.note)
+    return {"success": True, "crm": updated}
+
+
+@app.get("/api/analytics/advanced")
+def api_advanced_analytics(user_id: int = Depends(get_current_user_id)):
+    """Return comprehensive sales, geographic, audit, opportunity, CRM funnel, and AI analytics."""
+    return svc.get_advanced_analytics()

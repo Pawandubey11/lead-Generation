@@ -1177,3 +1177,226 @@ def get_verified_startup_leads(
         "mid_count": mid_count,
         "leads": records,
     }
+
+
+# ---------------------------------------------------------------------------
+# Advanced Sales, Audit & Pipeline Analytics
+# ---------------------------------------------------------------------------
+
+def get_advanced_analytics() -> Dict[str, Any]:
+    """
+    Aggregate deep LeadPulse analytics combining:
+    - Geography (by city and locality)
+    - Industry breakdown
+    - Contact qualification & completeness stats
+    - Website audit issue categories (from persisted audits + raw signals)
+    - Explainable Business Opportunity Score distribution
+    - CRM pipeline funnel, follow-up metrics, & conversion rates
+    - AI research usage stats
+    """
+    from scoring.opportunity_scorer import compute_opportunity_score
+    import crm_service as crm_svc
+    import ai_service as ai_svc
+
+    df = load_leads()
+    crm_map = crm_svc.get_all_crm_map()
+    audits_map = crm_svc.get_all_audits_map()
+    ai_reports = ai_svc.get_all_reports() or {}
+    ai_status = ai_svc.get_research_status() or {}
+    ai_cfg = ai_svc.get_ai_config() or {}
+
+    stage_counts = {s: 0 for s in crm_svc.CRM_STAGES}
+    today_str = pd.Timestamp.now().strftime("%Y-%m-%d")
+    overdue_followups = 0
+    scheduled_followups = 0
+
+    if df is None or df.empty:
+        return {
+            "has_data": False,
+            "total_leads": 0,
+            "qualified_leads": 0,
+            "unqualified_leads": 0,
+            "by_city": {},
+            "by_locality": {},
+            "by_industry": {},
+            "contact_stats": {"with_email": 0, "with_phone": 0, "with_website": 0, "with_social": 0, "avg_completeness": 0.0},
+            "opportunity_distribution": {"0-25": 0, "26-50": 0, "51-75": 0, "76-100": 0},
+            "avg_opportunity_score": 0.0,
+            "website_issues": {"NO_WEBSITE": 0, "SOCIAL_ONLY": 0, "BROKEN_OR_INACTIVE": 0, "NO_SSL": 0, "NOT_MOBILE": 0, "SLOW_PERFORMANCE": 0, "BROKEN_LINKS": 0, "AUDITED_HEALTHY": 0},
+            "crm_funnel": stage_counts,
+            "conversion_rates": {"qualification_rate": 0.0, "meeting_rate": 0.0, "proposal_rate": 0.0, "win_rate": 0.0, "overdue_followups": 0, "scheduled_followups": 0},
+            "ai_usage": {
+                "provider": ai_cfg.get("provider", "mock"),
+                "model": ai_cfg.get("model", ""),
+                "total_researched": len(ai_reports),
+                "completed": ai_status.get("completed", 0),
+                "failed": ai_status.get("failed", 0),
+            },
+        }
+
+    records = df.to_dict(orient="records")
+    total = len(records)
+
+    by_city: Dict[str, int] = {}
+    by_locality: Dict[str, int] = {}
+    by_industry: Dict[str, int] = {}
+    opp_buckets = {"0-25": 0, "26-50": 0, "51-75": 0, "76-100": 0}
+    opp_scores: List[int] = []
+    web_issues = {
+        "NO_WEBSITE": 0,
+        "SOCIAL_ONLY": 0,
+        "BROKEN_OR_INACTIVE": 0,
+        "NO_SSL": 0,
+        "NOT_MOBILE": 0,
+        "SLOW_PERFORMANCE": 0,
+        "BROKEN_LINKS": 0,
+        "AUDITED_HEALTHY": 0,
+    }
+
+    qualified = 0
+    with_email = 0
+    with_phone = 0
+    with_website = 0
+    with_social = 0
+
+    for rec in records:
+        name = str(rec.get("business_name") or "").strip()
+        key = name.lower()
+
+        city = str(rec.get("city") or "").strip() or "Unspecified"
+        by_city[city] = by_city.get(city, 0) + 1
+
+        loc = str(rec.get("locality") or "").strip()
+        if loc:
+            by_locality[loc] = by_locality.get(loc, 0) + 1
+
+        ind = str(rec.get("business_type") or "").strip()
+        if not ind:
+            spin = str(rec.get("spin") or "").strip()
+            ind = spin.split(" in ")[0].split(" (")[0].strip() if spin else "Unspecified"
+        by_industry[ind] = by_industry.get(ind, 0) + 1
+
+        has_em = bool(str(rec.get("email") or "").strip())
+        has_ph = bool(str(rec.get("phone") or "").strip())
+        has_web = bool(str(rec.get("website") or "").strip())
+        has_soc = bool(str(rec.get("instagram") or "").strip() or str(rec.get("facebook") or "").strip() or str(rec.get("linkedin") or "").strip())
+
+        if has_em:
+            with_email += 1
+        if has_ph:
+            with_phone += 1
+        if has_web:
+            with_website += 1
+        if has_soc:
+            with_social += 1
+
+        score_val = float(rec.get("lead_score") or 0)
+        if has_em or (has_ph and score_val >= 40):
+            qualified += 1
+
+        # Persisted audit + opportunity score
+        cached = audits_map.get(key)
+        audit_obj = cached.get("audit") if cached else None
+        ai_rep = ai_reports.get(name)
+
+        if cached and cached.get("opportunity"):
+            opp = cached["opportunity"]
+        else:
+            opp = compute_opportunity_score(rec, audit=audit_obj, ai_report=ai_rep)
+
+        osc = int(opp.get("opportunity_score") or 0)
+        opp_scores.append(osc)
+        if osc <= 25:
+            opp_buckets["0-25"] += 1
+        elif osc <= 50:
+            opp_buckets["26-50"] += 1
+        elif osc <= 75:
+            opp_buckets["51-75"] += 1
+        else:
+            opp_buckets["76-100"] += 1
+
+        # Website issue categorization
+        if audit_obj:
+            ws = audit_obj.get("website_status", "ACTIVE_OFFICIAL")
+            if ws in ("NO_WEBSITE", "SOCIAL_ONLY", "BROKEN_OR_INACTIVE"):
+                web_issues[ws] += 1
+            else:
+                had_issue = False
+                if not audit_obj.get("has_valid_ssl"):
+                    web_issues["NO_SSL"] += 1
+                    had_issue = True
+                if not audit_obj.get("mobile_responsive"):
+                    web_issues["NOT_MOBILE"] += 1
+                    had_issue = True
+                perf = audit_obj.get("performance_score")
+                if isinstance(perf, (int, float)) and perf < 50:
+                    web_issues["SLOW_PERFORMANCE"] += 1
+                    had_issue = True
+                bl = audit_obj.get("broken_links") or {}
+                if isinstance(bl, dict) and bl.get("broken_count", 0) > 0:
+                    web_issues["BROKEN_LINKS"] += 1
+                    had_issue = True
+                if not had_issue:
+                    web_issues["AUDITED_HEALTHY"] += 1
+        elif not has_web:
+            web_issues["NO_WEBSITE"] += 1
+
+        # CRM pipeline stage
+        crm_rec = crm_map.get(key)
+        stage = (crm_rec or {}).get("stage") or "New"
+        if stage in stage_counts:
+            stage_counts[stage] += 1
+        else:
+            stage_counts["New"] += 1
+        fup = str((crm_rec or {}).get("follow_up_date") or "").strip()
+        if fup:
+            scheduled_followups += 1
+            if fup < today_str and stage not in ("Won", "Lost"):
+                overdue_followups += 1
+
+    # Top sorted breakdowns
+    top_cities = dict(sorted(by_city.items(), key=lambda x: -x[1])[:20])
+    top_localities = dict(sorted(by_locality.items(), key=lambda x: -x[1])[:20])
+    top_industries = dict(sorted(by_industry.items(), key=lambda x: -x[1])[:15])
+
+    contacted_or_further = sum(stage_counts[s] for s in ("Contacted", "Meeting Scheduled", "Proposal Sent", "Won"))
+    meetings = sum(stage_counts[s] for s in ("Meeting Scheduled", "Proposal Sent", "Won"))
+    proposals = sum(stage_counts[s] for s in ("Proposal Sent", "Won"))
+    won = stage_counts["Won"]
+
+    denom_outreach = max(contacted_or_further, 1)
+    return {
+        "has_data": True,
+        "total_leads": total,
+        "qualified_leads": qualified,
+        "unqualified_leads": total - qualified,
+        "by_city": top_cities,
+        "by_locality": top_localities,
+        "by_industry": top_industries,
+        "contact_stats": {
+            "with_email": with_email,
+            "with_phone": with_phone,
+            "with_website": with_website,
+            "with_social": with_social,
+            "avg_completeness": round(float(df["contact_completeness"].mean()), 1),
+        },
+        "opportunity_distribution": opp_buckets,
+        "avg_opportunity_score": round(sum(opp_scores) / max(len(opp_scores), 1), 1),
+        "website_issues": web_issues,
+        "crm_funnel": stage_counts,
+        "conversion_rates": {
+            "qualification_rate": round((qualified / total) * 100, 1),
+            "meeting_rate": round((meetings / denom_outreach) * 100, 1) if contacted_or_further else 0.0,
+            "proposal_rate": round((proposals / denom_outreach) * 100, 1) if contacted_or_further else 0.0,
+            "win_rate": round((won / denom_outreach) * 100, 1) if contacted_or_further else 0.0,
+            "overdue_followups": overdue_followups,
+            "scheduled_followups": scheduled_followups,
+        },
+        "ai_usage": {
+            "provider": ai_cfg.get("provider", "mock"),
+            "model": ai_cfg.get("model", ""),
+            "total_researched": len(ai_reports),
+            "completed": ai_status.get("completed", 0),
+            "failed": ai_status.get("failed", 0),
+        },
+    }

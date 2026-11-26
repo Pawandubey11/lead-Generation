@@ -98,15 +98,22 @@
             </div>
           </div>
 
-          <!-- Locality Mode Toggle Row -->
+          <!-- Locality Mode + Discovery Provider Row -->
           <div style="display:flex; align-items:center; gap:1rem; margin-top:0.75rem; padding:0.65rem 0.75rem; background:#1e293b; border-radius:8px; border:1px solid #334155; flex-wrap:wrap;">
             <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer; font-size:0.85rem; color:#cbd5e1; user-select:none;">
               <input type="checkbox" id="toggle-locality-mode" onchange="window.LeadScraperApp.onLocalityModeToggle(this.checked)"
                 style="width:16px; height:16px; accent-color:#38bdf8; cursor:pointer;">
               <span>🗺️ <strong style="color:#38bdf8;">Locality Mode</strong> — search every neighbourhood inside the city</span>
             </label>
-            <span style="font-size:0.75rem; color:#64748b;">(Discovers areas automatically via OpenStreetMap + fallback)</span>
-            <div id="locality-mode-status" style="display:none; font-size:0.78rem; color:#94A3B8; margin-left:auto;"></div>
+            <div style="display:flex; align-items:center; gap:0.4rem; margin-left:auto;">
+              <label for="input-discovery-provider" style="font-size:0.75rem; color:#94A3B8;">Provider:</label>
+              <select id="input-discovery-provider" class="form-select" style="padding:0.25rem 0.5rem; font-size:0.78rem; width:auto; min-width:160px;">
+                <option value="playwright" selected>Playwright + OSM (Default)</option>
+                <option value="places">Google Places API (Optional)</option>
+                <option value="hybrid">Hybrid (Places + Playwright)</option>
+              </select>
+            </div>
+            <div id="locality-mode-status" style="display:none; font-size:0.78rem; color:#94A3B8;"></div>
           </div>
         </form>
 
@@ -180,6 +187,39 @@
             </thead>
             <tbody id="coverage-table-body"></tbody>
           </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Sales Analytics & CRM Pipeline Overview -->
+    <section class="card" id="analytics-crm-panel" style="border-color:#0ea5e9; margin-bottom:1.5rem;">
+      <div class="card-body" style="padding:1.15rem 1.5rem;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.85rem; flex-wrap:wrap; gap:0.5rem;">
+          <div style="font-size:0.95rem; font-weight:700; color:#38bdf8; display:flex; align-items:center; gap:0.5rem;">
+            <span>📊</span>
+            <span>Sales Pipeline, Opportunity & Audit Analytics</span>
+          </div>
+          <div style="display:flex; gap:0.5rem;">
+            <button onclick="refreshAdvancedAnalytics()" class="btn btn-secondary btn-sm">↻ Refresh Analytics</button>
+            <button onclick="toggleAnalyticsBody()" class="btn btn-secondary btn-sm" id="btn-toggle-analytics">Show / Hide</button>
+          </div>
+        </div>
+        <div id="analytics-crm-body">
+          <div id="analytics-kpis" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:0.65rem; margin-bottom:0.9rem;"></div>
+          <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:0.85rem;">
+            <div style="background:#0f172a; border:1px solid #1e293b; border-radius:8px; padding:0.75rem;">
+              <div style="font-size:0.75rem; font-weight:700; color:#94A3B8; text-transform:uppercase; margin-bottom:0.45rem;">CRM Sales Funnel</div>
+              <div id="analytics-crm-funnel" style="font-size:0.8rem; color:#cbd5e1;">Loading…</div>
+            </div>
+            <div style="background:#0f172a; border:1px solid #1e293b; border-radius:8px; padding:0.75rem;">
+              <div style="font-size:0.75rem; font-weight:700; color:#94A3B8; text-transform:uppercase; margin-bottom:0.45rem;">Top Cities & Industries</div>
+              <div id="analytics-geo-industry" style="font-size:0.8rem; color:#cbd5e1;">Loading…</div>
+            </div>
+            <div style="background:#0f172a; border:1px solid #1e293b; border-radius:8px; padding:0.75rem;">
+              <div style="font-size:0.75rem; font-weight:700; color:#94A3B8; text-transform:uppercase; margin-bottom:0.45rem;">Website Audit Issues & Opportunity</div>
+              <div id="analytics-audit-opp" style="font-size:0.8rem; color:#cbd5e1;">Loading…</div>
+            </div>
+          </div>
         </div>
       </div>
     </section>
@@ -371,6 +411,7 @@
             <th>Website</th>
             <th>Location / City</th>
             <th style="text-align:right;">Quality Score</th>
+            <th style="text-align:right;">Audit & CRM</th>
           </tr>
         </thead>
         <tbody id="leads-table-body">
@@ -412,6 +453,77 @@
       </div>
     </div>
   </footer>
+
+  <!-- Lead Technical Audit, Opportunity Score & CRM Drawer Modal -->
+  <div id="crm-audit-modal" style="display:none; position:fixed; inset:0; background:rgba(2,6,23,0.82); z-index:9999; overflow-y:auto; padding:2rem 1rem;">
+    <div style="max-width:860px; margin:0 auto; background:#0f172a; border:1px solid #334155; border-radius:12px; padding:1.5rem; color:#e2e8f0;">
+      <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #1e293b; padding-bottom:0.75rem; margin-bottom:1rem;">
+        <div>
+          <h3 id="modal-biz-title" style="margin:0; font-size:1.1rem; color:#fff;">Lead Audit & CRM</h3>
+          <div id="modal-biz-sub" style="font-size:0.78rem; color:#94A3B8; margin-top:0.2rem;"></div>
+        </div>
+        <button onclick="closeLeadInspector()" class="btn btn-secondary btn-sm">✕ Close</button>
+      </div>
+
+      <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:1rem;">
+        <!-- Left: Explainable Opportunity Score + Website Audit -->
+        <div style="background:#1e293b; border-radius:8px; padding:1rem;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem; gap:0.5rem; flex-wrap:wrap;">
+            <strong style="color:#38bdf8; font-size:0.9rem;">🎯 Opportunity & Website Audit</strong>
+            <div style="display:flex; align-items:center; gap:0.5rem;">
+              <label style="font-size:0.72rem; color:#cbd5e1; display:flex; align-items:center; gap:0.25rem; cursor:pointer;">
+                <input type="checkbox" id="chk-run-pagespeed"> PageSpeed
+              </label>
+              <button id="btn-run-audit" onclick="runSelectedLeadAudit()" class="btn btn-primary btn-sm">⚡ Run Audit</button>
+            </div>
+          </div>
+          <div id="modal-opp-box" style="font-size:0.8rem; line-height:1.5;">Loading…</div>
+          <div id="modal-audit-box" style="font-size:0.8rem; line-height:1.5; margin-top:0.75rem; border-top:1px solid #334155; padding-top:0.75rem;"></div>
+        </div>
+
+        <!-- Right: CRM Pipeline Management -->
+        <div style="background:#1e293b; border-radius:8px; padding:1rem;">
+          <strong style="color:#34d399; font-size:0.9rem; display:block; margin-bottom:0.75rem;">🗂️ CRM Sales Pipeline</strong>
+          <div style="display:grid; gap:0.6rem; font-size:0.8rem;">
+            <div>
+              <label class="form-label">Pipeline Stage</label>
+              <select id="crm-stage-select" class="form-select">
+                <option>New</option>
+                <option>Qualified</option>
+                <option>Contacted</option>
+                <option>Meeting Scheduled</option>
+                <option>Proposal Sent</option>
+                <option>Won</option>
+                <option>Lost</option>
+              </select>
+            </div>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.5rem;">
+              <div>
+                <label class="form-label">Lead Owner</label>
+                <input type="text" id="crm-owner-input" class="form-control" placeholder="e.g. Sales Rep">
+              </div>
+              <div>
+                <label class="form-label">Follow-up Date</label>
+                <input type="date" id="crm-followup-input" class="form-control">
+              </div>
+            </div>
+            <div>
+              <label class="form-label">Notes</label>
+              <textarea id="crm-notes-input" class="form-control" rows="3" placeholder="Call notes, next steps, pain points..."></textarea>
+            </div>
+            <div style="display:flex; gap:0.5rem;">
+              <button onclick="saveCRMUpdate(false)" class="btn btn-primary btn-sm" style="flex:1;">💾 Save CRM</button>
+              <button onclick="saveCRMUpdate(true)" class="btn btn-secondary btn-sm">📞 Log Contact</button>
+            </div>
+          </div>
+          <div style="margin-top:0.9rem; border-top:1px solid #334155; padding-top:0.65rem;">
+            <div style="font-size:0.72rem; font-weight:700; color:#94A3B8; text-transform:uppercase; margin-bottom:0.4rem;">Activity Timeline</div>
+            <div id="crm-activity-list" style="max-height:170px; overflow-y:auto; font-size:0.75rem; color:#cbd5e1;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- Toast Notification Container -->
   <div id="toast-container"></div>

@@ -264,11 +264,12 @@ def _update_last_history_entry():
 # Worker thread
 # ---------------------------------------------------------------------------
 
-def _scrape_worker(business_type: str, scope: str, country: Optional[str], cities_str: Optional[str], max_cities: int, max_leads_per_city: int, localities: Optional[List[str]] = None):
-    """Runs in a background thread. Calls generate_leads() and lead_cleaner."""
+def _scrape_worker(business_type: str, scope: str, country: Optional[str], cities_str: Optional[str], max_cities: int, max_leads_per_city: int, localities: Optional[List[str]] = None, discovery_provider: str = "playwright"):
+    """Runs in a background thread. Calls generate_leads() (and optional Google Places) and lead_cleaner."""
     try:
         from scrapers.crawler import (
             generate_leads,
+            enrich_leads_websites,
             set_progress_callback,
             clear_progress_callback,
             ScrapeCancelled,
@@ -311,15 +312,58 @@ def _scrape_worker(business_type: str, scope: str, country: Optional[str], citie
             else:
                 _add_log(f"🚀 Starting scrape: {business_type} in {country} (max {max_cities} cities)")
 
-        # ---- Run the crawler ----
-        df = generate_leads(
-            business_type,
-            target_location,
-            max_cities=max_cities,
-            custom_cities=custom_cities,
-            max_leads_per_city=max_leads_per_city,
-            is_locality_mode=is_locality_mode,
-        )
+        # ---- Optional Google Places API discovery ----
+        places_leads = []
+        provider = (discovery_provider or "playwright").strip().lower()
+        if provider in ("places", "hybrid"):
+            from scrapers.google_places_provider import is_google_places_configured, discover_via_google_places
+            if is_google_places_configured():
+                with _lock:
+                    _add_log(f"📍 Querying optional Google Places API ({provider} mode)…")
+                locs_to_query = custom_cities or ([country] if country else [])
+                for loc in locs_to_query[:max_cities]:
+                    found = discover_via_google_places(business_type, loc, max_results=min(max_leads_per_city, 20))
+                    for item in found:
+                        item["spin"] = _status.get("spin", f"{business_type} in {target_location}")
+                    places_leads.extend(found)
+                if places_leads:
+                    enrich_leads_websites(places_leads, max_workers=6)
+                    with _lock:
+                        _add_log(f"✅ Google Places API returned {len(places_leads)} leads")
+            else:
+                with _lock:
+                    _add_log("ℹ️ GOOGLE_PLACES_API_KEY not set — continuing with Playwright scraper")
+
+        # ---- Run the Playwright crawler (unless places-only succeeded) ----
+        df = None
+        if provider != "places" or not places_leads:
+            df = generate_leads(
+                business_type,
+                target_location,
+                max_cities=max_cities,
+                custom_cities=custom_cities,
+                max_leads_per_city=max_leads_per_city,
+                is_locality_mode=is_locality_mode,
+            )
+
+        if places_leads:
+            import pandas as pd
+            from scrapers.crawler import _deduplicate_df
+            raw_output = os.path.join(PROJECT_ROOT, "output", "local_business_leads.csv")
+            places_df = pd.DataFrame(places_leads)
+            if os.path.exists(raw_output):
+                try:
+                    existing_df = pd.read_csv(raw_output)
+                    combined = pd.concat([existing_df, places_df], ignore_index=True)
+                except Exception:
+                    combined = places_df
+            else:
+                combined = places_df
+            combined, _ = _deduplicate_df(combined)
+            _tmp = raw_output + ".tmp"
+            combined.to_csv(_tmp, index=False)
+            os.replace(_tmp, raw_output)
+            df = combined
 
         # ---- Run lead cleaner (same as main.py does) ----
         with _lock:
@@ -400,7 +444,7 @@ def _scrape_worker(business_type: str, scope: str, country: Optional[str], citie
 # Public API
 # ---------------------------------------------------------------------------
 
-def start_scrape(business_type: str, scope: str = "country", country: Optional[str] = None, cities: Optional[str] = None, max_cities: int = 30, max_leads_per_city: int = 20, localities: Optional[List[str]] = None) -> Dict[str, Any]:
+def start_scrape(business_type: str, scope: str = "country", country: Optional[str] = None, cities: Optional[str] = None, max_cities: int = 30, max_leads_per_city: int = 20, localities: Optional[List[str]] = None, discovery_provider: str = "playwright") -> Dict[str, Any]:
     """
     Start a scrape job in the background.
     Returns {"ok": True, "status": "started"} or {"ok": False, "status": "error", "error": "..."}.
@@ -469,7 +513,7 @@ def start_scrape(business_type: str, scope: str = "country", country: Optional[s
 
     _worker_thread = threading.Thread(
         target=_scrape_worker,
-        args=(business_type, scope, country, cities, max_cities, max_leads_per_city, localities),
+        args=(business_type, scope, country, cities, max_cities, max_leads_per_city, localities, discovery_provider),
         daemon=True,
         name="scraper-worker",
     )

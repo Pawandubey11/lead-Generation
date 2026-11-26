@@ -279,7 +279,7 @@
     if (state.filteredLeads.length === 0) {
       tbody.innerHTML = `
         <tr>
-          <td colspan="7" style="text-align:center; padding:3.5rem 1rem; color:#64748B;">
+          <td colspan="8" style="text-align:center; padding:3.5rem 1rem; color:#64748B;">
             <div style="font-size:1.15rem; font-weight:700; color:#CBD5E1; margin-bottom:0.4rem;">No leads matching active filters</div>
             <div>Try adjusting your Industry, City, or Country filters above, or launch a new scrape job.</div>
           </td>
@@ -336,6 +336,12 @@
         </td>
         <td style="text-align:right;">
           <span class="score-badge ${scoreClass}">${score}</span>
+        </td>
+        <td style="text-align:right;">
+          <button type="button" class="btn btn-secondary btn-sm" style="font-size:0.72rem; padding:0.25rem 0.55rem;"
+            onclick="openLeadInspector(decodeURIComponent('${encodeURIComponent(lead.business_name || '')}'))">
+            🔍 Audit & CRM
+          </button>
         </td>
       `;
 
@@ -550,6 +556,8 @@
 
     updateFilenamePreview();
 
+    const discoveryProvider = ($('input-discovery-provider')?.value || 'playwright').trim();
+
     let payload = {
       business_type: industry,
       scope: isCountry ? 'country' : 'city',
@@ -557,6 +565,7 @@
       cities: isCountry ? null : (isCountryCityPair ? locationParts[0] : location),
       max_cities: maxCities,
       max_leads_per_city: maxLeadsPerCity,
+      discovery_provider: discoveryProvider,
     };
 
     if (_localityModeEnabled && !isCountry) {
@@ -574,6 +583,7 @@
           localities: localities.map(l => l.name),
           max_cities: maxCities,
           max_leads_per_city: maxLeadsPerCity,
+          discovery_provider: discoveryProvider,
         };
         showToast(`🗺️ Locality mode: ${localities.length} areas in ${targetCity}`);
       } else {
@@ -1036,7 +1046,211 @@ window.exportEnrichedCSV = exportEnrichedCSV;
 
 // Auto-init when DOM is ready
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', initAIPanel);
+  document.addEventListener('DOMContentLoaded', () => { initAIPanel(); refreshAdvancedAnalytics(); });
 } else {
-  setTimeout(initAIPanel, 500);
+  setTimeout(() => { initAIPanel(); refreshAdvancedAnalytics(); }, 500);
 }
+
+// ================================================================
+// Phase 2/3: Sales Analytics, Website Audit, Opportunity Score & CRM
+// ================================================================
+
+let _activeInspectorBiz = '';
+
+function toggleAnalyticsBody() {
+  const el = document.getElementById('analytics-crm-body');
+  if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+async function refreshAdvancedAnalytics() {
+  try {
+    const a = await fetch('/api/analytics/advanced').then(r => r.json());
+    const kpiEl = document.getElementById('analytics-kpis');
+    const funnelEl = document.getElementById('analytics-crm-funnel');
+    const geoEl = document.getElementById('analytics-geo-industry');
+    const auditEl = document.getElementById('analytics-audit-opp');
+    if (!kpiEl) return;
+
+    const conv = a.conversion_rates || {};
+    kpiEl.innerHTML = [
+      { label: 'Total Leads', val: a.total_leads || 0, color: '#38bdf8' },
+      { label: 'Qualified', val: `${a.qualified_leads || 0} (${conv.qualification_rate || 0}%)`, color: '#34d399' },
+      { label: 'Avg Opportunity', val: `${a.avg_opportunity_score || 0}/100`, color: '#a78bfa' },
+      { label: 'Meeting Conv.', val: `${conv.meeting_rate || 0}%`, color: '#fbbf24' },
+      { label: 'Win Rate', val: `${conv.win_rate || 0}%`, color: '#10b981' },
+      { label: 'Overdue Follow-ups', val: conv.overdue_followups || 0, color: conv.overdue_followups > 0 ? '#f87171' : '#94a3b8' },
+    ].map(k => `
+      <div style="background:#0f172a; border:1px solid #1e293b; border-radius:8px; padding:0.55rem; text-align:center;">
+        <div style="font-size:1.1rem; font-weight:700; color:${k.color};">${escHtml(String(k.val))}</div>
+        <div style="font-size:0.65rem; color:#64748b; text-transform:uppercase;">${escHtml(k.label)}</div>
+      </div>
+    `).join('');
+
+    const funnel = a.crm_funnel || {};
+    funnelEl.innerHTML = Object.entries(funnel).map(([st, cnt]) =>
+      `<div style="display:flex;justify-content:space-between;padding:0.15rem 0;border-bottom:1px solid #1e293b;">
+         <span>${escHtml(st)}</span><strong style="color:#38bdf8;">${cnt}</strong>
+       </div>`
+    ).join('');
+
+    const cities = Object.entries(a.by_city || {}).slice(0, 5);
+    const inds = Object.entries(a.by_industry || {}).slice(0, 5);
+    geoEl.innerHTML =
+      `<div style="margin-bottom:0.4rem;"><strong style="color:#94A3B8;">Cities:</strong> ${cities.map(([k,v]) => `${escHtml(k)} (${v})`).join(', ') || 'None'}</div>` +
+      `<div><strong style="color:#94A3B8;">Industries:</strong> ${inds.map(([k,v]) => `${escHtml(k)} (${v})`).join(', ') || 'None'}</div>`;
+
+    const wi = a.website_issues || {};
+    const od = a.opportunity_distribution || {};
+    auditEl.innerHTML =
+      `<div style="margin-bottom:0.4rem;"><strong style="color:#94A3B8;">Opp. Distribution:</strong> ` +
+      Object.entries(od).map(([b, c]) => `${escHtml(b)}: ${c}`).join(' | ') + `</div>` +
+      `<div><strong style="color:#94A3B8;">Audit Gaps:</strong> NoWeb ${wi.NO_WEBSITE||0}, NoSSL ${wi.NO_SSL||0}, NotMobile ${wi.NOT_MOBILE||0}, Slow ${wi.SLOW_PERFORMANCE||0}, BrokenLinks ${wi.BROKEN_LINKS||0}</div>`;
+  } catch (e) { /* ignore non-critical */ }
+}
+
+async function openLeadInspector(businessName) {
+  _activeInspectorBiz = businessName;
+  const modal = document.getElementById('crm-audit-modal');
+  if (!modal) return;
+  modal.style.display = 'block';
+  document.getElementById('modal-biz-title').textContent = businessName;
+  document.getElementById('modal-biz-sub').textContent = 'Loading CRM, Opportunity Score & Website Audit…';
+
+  try {
+    const data = await fetch('/api/crm/lead/' + encodeURIComponent(businessName)).then(r => r.json());
+    document.getElementById('modal-biz-sub').textContent = 'Persistent SQLite CRM & Evidence-Backed Audit';
+    renderOpportunityAndAudit(data.opportunity, data.audit, data.mx);
+    renderCRMForm(data.crm);
+  } catch (e) {
+    document.getElementById('modal-opp-box').textContent = 'Failed to load lead details.';
+  }
+}
+
+function closeLeadInspector() {
+  const modal = document.getElementById('crm-audit-modal');
+  if (modal) modal.style.display = 'none';
+}
+
+function renderOpportunityAndAudit(opp, audit, mx) {
+  const oppBox = document.getElementById('modal-opp-box');
+  const auditBox = document.getElementById('modal-audit-box');
+  if (opp) {
+    const sub = opp.sub_scores || {};
+    const maxW = opp.max_weights || {};
+    const reasons = opp.reasons || {};
+    const allReasons = [
+      ...(reasons.service_fit || []),
+      ...(reasons.digital_gap || []),
+      ...(reasons.commercial_viability || []),
+      ...(reasons.contact_accessibility || []),
+    ];
+    oppBox.innerHTML = `
+      <div style="display:flex; align-items:center; gap:0.75rem; margin-bottom:0.6rem;">
+        <span style="font-size:1.5rem; font-weight:800; color:#38bdf8;">${opp.opportunity_score}/100</span>
+        <span style="background:#1e40af; color:#fff; padding:0.15rem 0.5rem; border-radius:4px; font-weight:700;">Grade ${escHtml(opp.opportunity_grade)}</span>
+        <span style="background:#334155; color:#cbd5e1; padding:0.15rem 0.5rem; border-radius:4px;">Confidence: ${escHtml(opp.confidence_label)} (${opp.data_confidence})</span>
+      </div>
+      <div style="font-size:0.76rem; color:#94A3B8; margin-bottom:0.5rem;">
+        Service Fit: <strong>${sub.service_fit}/${maxW.service_fit}</strong> |
+        Digital Gap: <strong>${sub.digital_gap}/${maxW.digital_gap}</strong> |
+        Viability: <strong>${sub.commercial_viability}/${maxW.commercial_viability}</strong> |
+        Contact: <strong>${sub.contact_accessibility}/${maxW.contact_accessibility}</strong>
+      </div>
+      <div style="margin-bottom:0.5rem;"><strong style="color:#a78bfa;">Recommended Pitch:</strong> ${escHtml(opp.pitch_focus || '')}</div>
+      <ul style="margin:0; padding-left:1.1rem; color:#cbd5e1; font-size:0.75rem;">
+        ${allReasons.map(r => `<li>${escHtml(r)}</li>`).join('')}
+      </ul>
+    `;
+  }
+
+  if (audit) {
+    const seo = audit.seo_checks || {};
+    const bl = audit.broken_links || {};
+    const mobPs = audit.mobile_pagespeed || {};
+    const deskPs = audit.desktop_pagespeed || {};
+    auditBox.innerHTML = `
+      <strong style="color:#fbbf24;">🌐 Technical Website Audit (${escHtml(audit.website_status)})</strong>
+      <div style="margin-top:0.35rem; font-size:0.76rem; color:#cbd5e1;">
+        SSL: <strong>${audit.has_valid_ssl ? '✅ Valid' : '❌ Missing'}</strong> |
+        Mobile: <strong>${audit.mobile_responsive ? '✅ Responsive' : '❌ No Viewport'}</strong> |
+        CMS: <strong>${escHtml(audit.cms_detected || 'Unknown')}</strong> |
+        TTFB: <strong>${audit.response_time_ms ?? 'N/A'} ms</strong><br>
+        Basic SEO: <strong>${seo.seo_basic_score ?? 0}/100</strong> |
+        Broken Links: <strong>${bl.broken_count || 0}/${bl.checked_count || 0}</strong>
+        ${mx ? ` | Email MX: <strong>${escHtml(mx.status || 'N/A')}</strong>` : ''}
+      </div>
+      ${mobPs && mobPs.performance_score != null ? `
+        <div style="margin-top:0.4rem; padding:0.4rem; background:#0f172a; border-radius:6px; font-size:0.74rem;">
+          <strong>Core Web Vitals (Mobile / Desktop):</strong>
+          Perf ${mobPs.performance_score}/${deskPs?.performance_score ?? '—'} |
+          LCP ${mobPs.lcp_ms ?? '—'}ms | CLS ${mobPs.cls ?? '—'} | INP ${mobPs.inp_ms ?? '—'}ms
+        </div>` : ''}
+      <div style="margin-top:0.4rem; font-size:0.75rem; color:#94A3B8;">${escHtml(audit.technical_issues_summary || '')}</div>
+    `;
+  } else {
+    auditBox.innerHTML = '<span style="color:#94A3B8; font-size:0.76rem;">No live technical website audit cached yet. Click "⚡ Run Audit" above to inspect SSL, mobile, SEO, broken links, and optional PageSpeed.</span>';
+  }
+}
+
+function renderCRMForm(crm) {
+  if (!crm) return;
+  document.getElementById('crm-stage-select').value = crm.stage || 'New';
+  document.getElementById('crm-owner-input').value = crm.owner || '';
+  document.getElementById('crm-followup-input').value = crm.follow_up_date || '';
+  document.getElementById('crm-notes-input').value = crm.notes || '';
+  const listEl = document.getElementById('crm-activity-list');
+  const acts = crm.activities || [];
+  listEl.innerHTML = acts.length
+    ? acts.map(a => `<div style="padding:0.3rem 0; border-bottom:1px solid #334155;">
+        <span style="color:#38bdf8;">[${escHtml(a.activity_type)}]</span> ${escHtml(a.note || `${a.old_value} -> ${a.new_value}`)}
+        <div style="font-size:0.68rem; color:#64748b;">${escHtml(a.created_at)}</div>
+      </div>`).join('')
+    : '<span style="color:#64748b;">No CRM activity logged yet.</span>';
+}
+
+async function runSelectedLeadAudit() {
+  if (!_activeInspectorBiz) return;
+  const btn = document.getElementById('btn-run-audit');
+  const runPS = Boolean(document.getElementById('chk-run-pagespeed')?.checked);
+  if (btn) { btn.disabled = true; btn.textContent = 'Auditing…'; }
+  try {
+    const res = await fetch('/api/leads/audit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ business_name: _activeInspectorBiz, run_pagespeed: runPS, check_mx: true, check_links: true }),
+    }).then(r => r.json());
+    renderOpportunityAndAudit(res.opportunity, res.audit, res.mx);
+    refreshAdvancedAnalytics();
+  } catch (e) {
+    alert('Audit failed: ' + e);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '⚡ Run Audit'; }
+  }
+}
+
+async function saveCRMUpdate(markContacted) {
+  if (!_activeInspectorBiz) return;
+  const payload = {
+    stage: document.getElementById('crm-stage-select').value,
+    owner: document.getElementById('crm-owner-input').value,
+    follow_up_date: document.getElementById('crm-followup-input').value,
+    notes: document.getElementById('crm-notes-input').value,
+    mark_contacted: Boolean(markContacted),
+  };
+  const res = await fetch('/api/crm/lead/' + encodeURIComponent(_activeInspectorBiz), {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).then(r => r.json());
+  if (res.success) {
+    renderCRMForm(res.crm);
+    refreshAdvancedAnalytics();
+  }
+}
+
+window.toggleAnalyticsBody = toggleAnalyticsBody;
+window.refreshAdvancedAnalytics = refreshAdvancedAnalytics;
+window.openLeadInspector = openLeadInspector;
+window.closeLeadInspector = closeLeadInspector;
+window.runSelectedLeadAudit = runSelectedLeadAudit;
+window.saveCRMUpdate = saveCRMUpdate;

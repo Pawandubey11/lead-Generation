@@ -60,6 +60,50 @@ def init_db():
         FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
     )
     """)
+
+    # 4. CRM Lead Pipeline Table (Safe idempotent migration)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS lead_crm (
+        lead_key TEXT PRIMARY KEY,
+        business_name TEXT NOT NULL,
+        stage TEXT NOT NULL DEFAULT 'New',
+        owner TEXT DEFAULT '',
+        follow_up_date TEXT DEFAULT '',
+        notes TEXT DEFAULT '',
+        last_contacted_at TEXT DEFAULT '',
+        estimated_value REAL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """)
+
+    # 5. CRM Activity & Status History Log
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS lead_activities (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        lead_key TEXT NOT NULL,
+        business_name TEXT NOT NULL,
+        activity_type TEXT NOT NULL,
+        old_value TEXT DEFAULT '',
+        new_value TEXT DEFAULT '',
+        note TEXT DEFAULT '',
+        actor TEXT DEFAULT '',
+        created_at TEXT NOT NULL
+    )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_lead_activities_key ON lead_activities(lead_key)")
+
+    # 6. Persistent Website Audit & Opportunity Score Cache
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS lead_audits (
+        lead_key TEXT PRIMARY KEY,
+        business_name TEXT NOT NULL,
+        audit_json TEXT NOT NULL,
+        opportunity_json TEXT NOT NULL,
+        mx_json TEXT DEFAULT '{}',
+        updated_at TEXT NOT NULL
+    )
+    """)
     
     conn.commit()
     conn.close()
