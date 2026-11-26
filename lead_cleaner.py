@@ -55,6 +55,8 @@ text_cols = [
 for col in text_cols:
     if col in df.columns:
         df[col] = df[col].fillna("").astype(str).replace(["nan", "0", "0.0", "None", "null"], "").str.strip()
+        if col == "reviews":
+            df[col] = df[col].str.replace(r"\.0$", "", regex=True)
 
 for col in df.columns:
     if col not in text_cols:

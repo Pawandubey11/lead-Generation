@@ -290,7 +290,7 @@ def _scrape_worker(business_type: str, scope: str, country: Optional[str], citie
         if localities and len(localities) > 0:
             is_locality_mode = True
             custom_cities = localities
-            target_location = country or ", ".join(localities[:2])
+            target_location = (country or cities_str or ", ".join(localities[:2])).strip()
             with _lock:
                 _status["is_locality_mode"] = True
                 _status["localities"] = list(localities)
@@ -458,7 +458,7 @@ def start_scrape(business_type: str, scope: str = "country", country: Optional[s
 
     if scope in ("city", "cities") or (cities and not country):
         scope = "city"
-        if not cities and country:
+        if not cities and country and not localities:
             cities = country
             country = ""
 

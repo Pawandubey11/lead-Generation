@@ -243,6 +243,8 @@ def load_leads() -> Optional[pd.DataFrame]:
     # Clean string columns
     for col in STRING_FIELDS:
         df[col] = df[col].fillna("").astype(str).replace(["nan", "None", "null"], "").str.strip()
+    if "reviews" in df.columns:
+        df["reviews"] = df["reviews"].str.replace(r"\.0$", "", regex=True)
 
     # Clean numeric columns
     df["lead_score"] = pd.to_numeric(df["lead_score"], errors="coerce").fillna(0)
