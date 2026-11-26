@@ -361,6 +361,13 @@ def launch_browser(p):
             "--disable-gpu",
             "--disable-blink-features=AutomationControlled",
             "--memory-pressure-off",
+            "--js-flags=--max-old-space-size=256",
+            "--disable-extensions",
+            "--disable-background-networking",
+            "--disable-default-apps",
+            "--disable-sync",
+            "--no-first-run",
+            "--mute-audio",
             "--lang=en-IN",
         ]
     )
@@ -391,6 +398,14 @@ def new_context(browser, inject_cookies: bool = True, block_heavy: bool = True):
     )
     if block_heavy:
         context.route("**/*", _route_block_heavy)
+    # Inject EU Google Consent bypass cookies so cloud servers in EU (e.g. Frankfurt) never stall on consent.google.com
+    try:
+        context.add_cookies([
+            {"name": "CONSENT", "value": "YES+cb.20210328-17-p0.en+FX+417", "domain": ".google.com", "path": "/"},
+            {"name": "SOCS", "value": "CAISHAgBEhJnd3NfMjAyMzA4MTAtMF9SQzIaAmVuIAEaBgiA_LyaBg", "domain": ".google.com", "path": "/"},
+        ])
+    except Exception:
+        pass
     if inject_cookies:
         _inject_cookies(context, _get_cookies())
     return context
@@ -1086,11 +1101,22 @@ def scrape_city(business_type, city, p, browser, page, partial_save_callback=Non
         if lead and any([lead["business_name"], lead["phone"], lead["website"], lead["address"]]):
             lead["city"] = city
             city_leads.append(lead)
+            if len(city_leads) % 3 == 0 and partial_save_callback:
+                partial_save_callback(city_leads, idx + 1, len(business_links))
         else:
             if lead is None:
                 failed += 1
             else:
                 skipped += 1
+
+        # Recycle browser context every 10 businesses to prevent Chromium OOM on 512MB cloud containers
+        if (idx + 1) % 10 == 0:
+            try:
+                old_ctx = page.context
+                page = new_page(browser, inject_cookies=True, block_heavy=True)
+                old_ctx.close()
+            except Exception:
+                pass
 
     t_details_elapsed = time.time() - t_details_start
 
