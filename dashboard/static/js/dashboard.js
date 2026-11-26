@@ -787,7 +787,8 @@
 })();
 
 // ================================================================
-// AI Business Intelligence � SystemaOps Opportunity Intelligence
+// ================================================================
+// AI Business Intelligence — SystemaOps Opportunity Intelligence
 // ================================================================
 
 const AI = {
@@ -798,18 +799,53 @@ const AI = {
   allLeads: [],
 };
 
+function updateAIModeBadge(cfg) {
+  const badge = document.getElementById('ai-mode-badge');
+  const sel = document.getElementById('ai-provider-select');
+  if (sel && cfg.provider) sel.value = cfg.provider;
+  if (!badge) return;
+  if (cfg.mock_mode) {
+    badge.textContent = 'MOCK MODE';
+    badge.style.background = '#4c1d95';
+    badge.style.color = '#c4b5fd';
+  } else if (cfg.local_mode) {
+    badge.textContent = 'LOCAL GROUNDED';
+    badge.style.background = '#0369a1';
+    badge.style.color = '#bae6fd';
+  } else {
+    badge.textContent = cfg.provider.toUpperCase() + ' / ' + cfg.model;
+    badge.style.background = cfg.configured ? '#065f46' : '#7f1d1d';
+    badge.style.color = cfg.configured ? '#6ee7b7' : '#fecaca';
+  }
+}
+
+async function switchAIProvider(provider) {
+  try {
+    const res = await fetch('/api/ai/provider', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider }),
+    }).then(r => r.json());
+    if (res.ok && res.config) {
+      updateAIModeBadge(res.config);
+      const banner = document.getElementById('ai-error-banner');
+      if (banner) banner.style.display = 'none';
+    }
+  } catch (e) { console.warn('Switch provider error', e); }
+}
+
 // ---- Initialisation ----
 async function initAIPanel() {
   try {
     const cfg = await fetch('/api/ai/config').then(r => r.json());
-    const badge = document.getElementById('ai-mode-badge');
-    if (badge) {
-      badge.textContent = cfg.mock_mode ? 'MOCK MODE' : cfg.provider.toUpperCase() + ' / ' + cfg.model;
-      badge.style.background = cfg.mock_mode ? '#4c1d95' : '#065f46';
-      badge.style.color = cfg.mock_mode ? '#c4b5fd' : '#6ee7b7';
-    }
+    updateAIModeBadge(cfg);
   } catch (e) { /* non-critical */ }
   await refreshAILeadList();
+  try {
+    const reps = await fetch('/api/ai/reports').then(r => r.json());
+    window._aiReports = reps || {};
+    renderAILeadRows();
+  } catch (e) {}
   startAIStatusPoll();
 }
 
@@ -826,25 +862,40 @@ function renderAILeadRows() {
   const container = document.getElementById('ai-lead-rows');
   if (!container) return;
   const reports = window._aiReports || {};
-  container.innerHTML = AI.allLeads.map((ld, i) => {
+  if (AI.allLeads.length === 0) {
+    container.innerHTML = '<div style="padding:0.75rem; font-size:0.8rem; color:#6b7280;">No leads available yet.</div>';
+    return;
+  }
+  container.innerHTML = AI.allLeads.map((ld) => {
     const name = ld.business_name || '';
+    const enc = encodeURIComponent(name);
     const checked = AI.selectedNames.has(name);
     const rep = reports[name];
     let dotColor = '#4b5563';
-    let statusText = '';
+    let statusHtml = '';
     if (rep) {
-      if (rep.research_status === 'completed') { dotColor = '#34d399'; statusText = '?'; }
-      else if (rep.research_status === 'failed') { dotColor = '#f87171'; statusText = '?'; }
-      else { dotColor = '#fbbf24'; statusText = '�'; }
+      if (rep.research_status === 'completed') {
+        dotColor = rep.quota_fallback_reason ? '#fbbf24' : '#34d399';
+        statusHtml = rep.quota_fallback_reason
+          ? '<span style="font-size:0.7rem; color:#fbbf24;" title="Dify quota exceeded — grounded local analysis generated">⚡ Local Fallback</span>'
+          : '<span style="font-size:0.75rem; color:#34d399;">✓</span>';
+      } else if (rep.research_status === 'failed') {
+        dotColor = '#f87171';
+        const errTitle = escHtml(rep.research_error || 'Research failed');
+        statusHtml = '<span style="font-size:0.7rem; color:#f87171; cursor:help;" title="' + errTitle + '">✗ ' + errTitle.slice(0, 48) + '</span>';
+      } else {
+        dotColor = '#fbbf24';
+        statusHtml = '<span style="font-size:0.72rem; color:#fbbf24;">⏳</span>';
+      }
     }
     return '<div class="ai-lead-row">' +
       '<input type="checkbox" ' + (checked ? 'checked' : '') +
-        ' onchange="toggleAILead(\'' + name.replace(/'/g, "\\'") + '\', this.checked)">' +
+        ' onchange="toggleAILead(decodeURIComponent(\'' + enc + '\'), this.checked)">' +
       '<span class="ai-status-dot" style="background:' + dotColor + '"></span>' +
-      '<span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + (name || 'Unknown') + '</span>' +
-      '<span style="font-size:0.7rem; color:#6b7280;">' + statusText + '</span>' +
+      '<span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + escHtml(name || 'Unknown') + '</span>' +
+      statusHtml +
       (rep && rep.research_status === 'completed'
-        ? '<button class="ai-view-btn" onclick="viewAIReport(\'' + name.replace(/'/g, "\\'") + '\')">View ?</button>'
+        ? '<button class="ai-view-btn" onclick="viewAIReport(decodeURIComponent(\'' + enc + '\'))">View →</button>'
         : '') +
       '</div>';
   }).join('');
@@ -857,7 +908,14 @@ function toggleAILead(name, checked) {
 }
 
 function aiSelectAll() {
-  AI.allLeads.forEach(ld => { if (ld.business_name) AI.selectedNames.add(ld.business_name); });
+  const allSelected = AI.allLeads.length > 0 && AI.allLeads.every(ld => !ld.business_name || AI.selectedNames.has(ld.business_name));
+  if (allSelected) {
+    AI.selectedNames.clear();
+  } else {
+    AI.allLeads.forEach(ld => { if (ld.business_name) AI.selectedNames.add(ld.business_name); });
+  }
+  const btn = document.getElementById('btn-ai-select-all');
+  if (btn) btn.textContent = allSelected ? 'Select All' : 'Deselect All';
   renderAILeadRows();
   document.getElementById('ai-stat-total').textContent = AI.selectedNames.size;
 }
@@ -865,7 +923,8 @@ function aiSelectAll() {
 // ---- Research control ----
 async function startAIResearch() {
   if (AI.selectedNames.size === 0) {
-    showToast('Select at least one lead first', 'warning'); return;
+    alert('Select at least one lead first (or click Select All).');
+    return;
   }
   try {
     const res = await fetch('/api/ai/research/start', {
@@ -874,28 +933,32 @@ async function startAIResearch() {
       body: JSON.stringify({ business_names: Array.from(AI.selectedNames) }),
     }).then(r => r.json());
 
-    if (res.ok === false) { showToast('Error: ' + res.error, 'error'); return; }
-    showToast('AI research started for ' + (res.total || '?') + ' companies', 'success');
+    if (res.ok === false) { alert('Error: ' + res.error); return; }
     document.getElementById('btn-ai-stop').style.display = '';
     document.getElementById('ai-progress-row').style.display = '';
-  } catch (e) { showToast('Failed to start research: ' + e, 'error'); }
+    pollAIStatus();
+  } catch (e) { alert('Failed to start research: ' + e); }
 }
 
 async function stopAIResearch() {
   await fetch('/api/ai/research/stop', { method: 'POST' });
-  showToast('Research stopping�', 'info');
 }
 
 async function retryFailedResearch() {
   const res = await fetch('/api/ai/research/retry', { method: 'POST' }).then(r => r.json());
-  if (res.ok) showToast('Retrying failed companies�', 'info');
-  else showToast('Nothing to retry', 'warning');
+  if (res.ok) {
+    document.getElementById('btn-ai-stop').style.display = '';
+    document.getElementById('ai-progress-row').style.display = '';
+    pollAIStatus();
+  } else {
+    alert(res.error || 'Nothing to retry');
+  }
 }
 
 // ---- Status polling ----
 function startAIStatusPoll() {
   if (AI.pollTimer) clearInterval(AI.pollTimer);
-  AI.pollTimer = setInterval(pollAIStatus, 3000);
+  AI.pollTimer = setInterval(pollAIStatus, 2500);
 }
 
 async function pollAIStatus() {
@@ -903,13 +966,16 @@ async function pollAIStatus() {
     const st = await fetch('/api/ai/status').then(r => r.json());
     updateAIProgressUI(st);
 
-    if (st.state === 'completed' || st.state === 'error') {
+    if (st.state === 'running' || st.state === 'completed' || st.state === 'error') {
       const reps = await fetch('/api/ai/reports').then(r => r.json());
       window._aiReports = reps;
       renderAILeadRows();
-      document.getElementById('btn-ai-stop').style.display = 'none';
-      if (Object.values(reps).some(r => r.research_status === 'failed')) {
-        document.getElementById('btn-ai-retry').style.display = '';
+      if (st.state !== 'running') {
+        document.getElementById('btn-ai-stop').style.display = 'none';
+      }
+      const retryBtn = document.getElementById('btn-ai-retry');
+      if (retryBtn) {
+        retryBtn.style.display = Object.values(reps).some(r => r.research_status === 'failed') ? '' : 'none';
       }
     }
   } catch (e) { /* non-critical */ }
@@ -925,11 +991,25 @@ function updateAIProgressUI(st) {
     (st.completed + st.failed) + ' / ' + st.total;
   const label = document.getElementById('ai-progress-label');
   if (st.state === 'running') {
-    label.textContent = st.current_company ? 'Researching: ' + st.current_company : 'Starting�';
+    label.textContent = st.current_company ? 'Researching: ' + st.current_company : 'Starting…';
   } else if (st.state === 'completed') {
-    label.textContent = '? Research complete';
+    label.textContent = st.fallback_count > 0
+      ? '✅ Research complete (' + st.fallback_count + ' via Grounded Local fallback)'
+      : '✅ Research complete';
   } else if (st.state === 'error') {
-    label.textContent = '? Error: ' + (st.error || 'unknown');
+    label.textContent = '❌ Error: ' + (st.error || 'unknown');
+  }
+
+  const banner = document.getElementById('ai-error-banner');
+  if (banner) {
+    if (st.last_error) {
+      banner.style.display = 'block';
+      banner.innerHTML = st.fallback_count > 0
+        ? '⚠️ <strong>Dify notice:</strong> ' + escHtml(st.last_error) + ' — automatically generated <strong>Grounded Local</strong> intelligence from live website + audit data. Top up Dify credits or switch provider above anytime.'
+        : '❌ <strong>AI Provider Error:</strong> ' + escHtml(st.last_error) + ' — <button onclick="switchAIProvider(\'local\')" style="background:#0369a1;color:#fff;border:none;border-radius:4px;padding:0.15rem 0.5rem;cursor:pointer;font-size:0.74rem;">Switch to Grounded Local</button>';
+    } else {
+      banner.style.display = 'none';
+    }
   }
 }
 
@@ -938,10 +1018,10 @@ async function viewAIReport(name) {
   try {
     const rep = await fetch('/api/ai/report/' + encodeURIComponent(name)).then(r => r.json());
     AI.currentReport = rep;
-    document.getElementById('ai-report-title').textContent = '?? ' + name;
+    document.getElementById('ai-report-title').textContent = '🏢 ' + name;
     document.getElementById('ai-report-section').style.display = '';
     switchAITab(AI.currentTab);
-  } catch (e) { showToast('Could not load report: ' + e, 'error'); }
+  } catch (e) { alert('Could not load report: ' + e); }
 }
 
 function closeAIReport() {
@@ -965,7 +1045,7 @@ function renderAITabContent(tab) {
   switch (tab) {
     case 'overview':
       html = section('Company Overview', r.company_overview) +
-             section('Industry', r.industry + ' | ' + r.business_model) +
+             section('Industry', (r.industry || '') + ' | ' + (r.business_model || '')) +
              section('Products & Services', r.products_services) +
              section('Existing Capabilities', r.existing_capabilities) +
              section('Technology Signals', r.technology_signals);
@@ -973,10 +1053,10 @@ function renderAITabContent(tab) {
     case 'website':
       html = badge('Website Status', r.website_status) +
              section('Website Summary', r.website_summary) +
-             section('? Strengths', r.website_strengths) +
-             section('?? Problems', r.website_problems) +
-             section('?? Improvement Opportunities', r.website_improvement_opportunities) +
-             section('?? Recommendations', r.website_recommendations);
+             section('✅ Strengths', r.website_strengths) +
+             section('⚠️ Problems', r.website_problems) +
+             section('💡 Improvement Opportunities', r.website_improvement_opportunities) +
+             section('🔧 Recommendations', r.website_recommendations);
       break;
     case 'opportunity':
       html = section('SystemaOps Opportunity', r.systemaops_business_opportunity) +
@@ -1041,6 +1121,7 @@ async function exportEnrichedCSV() {
 }
 
 // ---- Expose to global ----
+window.switchAIProvider = switchAIProvider;
 window.startAIResearch = startAIResearch;
 window.stopAIResearch = stopAIResearch;
 window.retryFailedResearch = retryFailedResearch;

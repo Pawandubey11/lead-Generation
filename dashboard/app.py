@@ -828,10 +828,27 @@ AIResearchRequest.model_rebuild()
 AIReportMarkRequest.model_rebuild()
 
 
+class AIProviderRequest(BaseModel):
+    provider: str
+    model: Optional[str] = None
+
+
+AIProviderRequest.model_rebuild()
+
+
 @app.get("/api/ai/config")
 def ai_config():
     """Return AI configuration (no secrets exposed)."""
     return ai_svc.get_ai_config()
+
+
+@app.post("/api/ai/provider")
+def ai_set_provider(req: AIProviderRequest, user_id: int = Depends(get_current_user_id)):
+    """Switch active AI provider at runtime (dify | local | mock | openai | gemini | anthropic)."""
+    try:
+        return {"ok": True, "config": ai_svc.set_ai_provider(req.provider, req.model)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.get("/api/ai/status")

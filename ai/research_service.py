@@ -28,6 +28,8 @@ class ResearchService:
             "started_at": None,
             "completed_at": None,
             "error": None,
+            "last_error": None,
+            "fallback_count": 0,
         }
         self._thread: Optional[threading.Thread] = None
 
@@ -75,6 +77,8 @@ class ResearchService:
                     "started_at": datetime.utcnow().isoformat(),
                     "completed_at": None,
                     "error": None,
+                    "last_error": None,
+                    "fallback_count": 0,
                 }
             )
 
@@ -101,6 +105,8 @@ class ResearchService:
         retry_leads = [ld for ld in leads if ld.get("business_name") in failed_names]
         if not retry_leads:
             return {"ok": False, "error": "No failed companies to retry"}
+        from ai.research_engine import research_engine
+        research_engine.clear_cache([ld.get("business_name", "") for ld in retry_leads])
         return self.start_research(retry_leads)
 
     # ------------------------------------------------------------------
@@ -125,8 +131,12 @@ class ResearchService:
                         self._status["results"][name] = result
                         if result.get("research_status") == "completed":
                             self._status["completed"] += 1
+                            if result.get("quota_fallback_reason"):
+                                self._status["fallback_count"] = self._status.get("fallback_count", 0) + 1
+                                self._status["last_error"] = result["quota_fallback_reason"]
                         else:
                             self._status["failed"] += 1
+                            self._status["last_error"] = result.get("research_error")
                         if name in self._status["queue"]:
                             self._status["queue"].remove(name)
                 except Exception as exc:

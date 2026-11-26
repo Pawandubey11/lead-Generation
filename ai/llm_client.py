@@ -23,6 +23,25 @@ class LLMError(Exception):
     """Raised when LLM call fails after all retries."""
 
 
+class QuotaExceededError(LLMError):
+    """Raised when the external LLM/Dify provider reports quota/credits exhaustion."""
+
+
+def _extract_http_error_detail(resp) -> str:
+    """Extract clean human-readable error detail from JSON HTTP error responses."""
+    try:
+        body = resp.json()
+        if isinstance(body, dict):
+            err = body.get("error")
+            if isinstance(err, dict) and err.get("message"):
+                return str(err["message"])
+            if body.get("message"):
+                return str(body["message"])
+    except Exception:
+        pass
+    return (resp.text or f"HTTP {resp.status_code}")[:200]
+
+
 class LLMClient:
     def __init__(self) -> None:
         self.provider: str = os.getenv("AI_PROVIDER", "mock").lower()
@@ -35,13 +54,19 @@ class LLMClient:
         self.max_retries: int = 3
         self.timeout: int = 120  # Dify workflows can be slower
 
+    def set_provider(self, provider: str, model: str = None) -> None:
+        """Switch active AI provider at runtime."""
+        self.provider = (provider or "local").strip().lower()
+        if model:
+            self.model = model.strip()
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
     def is_available(self) -> bool:
         """Return True if the configured provider can be called."""
-        if self.provider == "mock":
+        if self.provider in ("mock", "local"):
             return True
         if self.provider == "openai":
             return bool(self.openai_key)
@@ -70,6 +95,9 @@ class LLMClient:
                     return self._call_dify(prompt, system)
                 # Unknown provider → mock
                 return self._mock_response(prompt)
+            except QuotaExceededError:
+                # Quota errors cannot be recovered by retrying immediately; pass straight through
+                raise
             except Exception as exc:
                 last_exc = exc
                 logger.warning("LLM attempt %d/%d failed: %s", attempt + 1, self.max_retries, exc)
@@ -107,7 +135,11 @@ class LLMClient:
             json=payload,
             timeout=self.timeout,
         )
-        resp.raise_for_status()
+        if not resp.ok:
+            detail = _extract_http_error_detail(resp)
+            if resp.status_code in (400, 402, 429) and any(w in detail.lower() for w in ("quota", "credit", "limit", "exceeded", "balance")):
+                raise QuotaExceededError(f"Dify quota exceeded ({resp.status_code}): {detail}")
+            raise LLMError(f"Dify API error ({resp.status_code}): {detail}")
         data = resp.json()
 
         # Dify chatflow returns the answer in data["answer"]
@@ -173,16 +205,24 @@ class LLMClient:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
 
+        openai_model = self.model if self.model and not self.model.startswith(("gemini", "claude")) else "gpt-4o-mini"
+        if openai_model in ("gpt-5", "dify", ""):
+            openai_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
         resp = requests.post(
             "https://api.openai.com/v1/chat/completions",
             headers={
                 "Authorization": f"Bearer {self.openai_key}",
                 "Content-Type": "application/json",
             },
-            json={"model": self.model, "messages": messages, "temperature": temperature},
+            json={"model": openai_model, "messages": messages, "temperature": temperature},
             timeout=self.timeout,
         )
-        resp.raise_for_status()
+        if not resp.ok:
+            detail = _extract_http_error_detail(resp)
+            if resp.status_code in (402, 429) and any(w in detail.lower() for w in ("quota", "billing", "exceeded")):
+                raise QuotaExceededError(f"OpenAI quota exceeded ({resp.status_code}): {detail}")
+            raise LLMError(f"OpenAI API error ({resp.status_code}): {detail}")
         return resp.json()["choices"][0]["message"]["content"]
 
     def _call_gemini(self, prompt: str, system: str, temperature: float) -> str:
@@ -248,7 +288,11 @@ class LLMClient:
             json=payload,
             timeout=self.timeout,
         )
-        resp.raise_for_status()
+        if not resp.ok:
+            detail = _extract_http_error_detail(resp)
+            if resp.status_code in (400, 402, 429) and any(w in detail.lower() for w in ("quota", "credit", "limit", "exceeded", "balance")):
+                raise QuotaExceededError(f"Dify quota exceeded ({resp.status_code}): {detail}")
+            raise LLMError(f"Dify API error ({resp.status_code}): {detail}")
         return resp.json().get("answer", "")
 
     def _mock_response(self, prompt: str) -> str:  # noqa: ARG002

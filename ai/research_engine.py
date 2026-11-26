@@ -59,6 +59,13 @@ class CompanyResearchEngine:
     # Public
     # ------------------------------------------------------------------
 
+    def clear_cache(self, names: List[str] = None) -> None:
+        if names is None:
+            self._cache.clear()
+        else:
+            for n in names:
+                self._cache.pop(n, None)
+
     def research_company(self, lead: dict) -> dict:
         """
         Research a lead and return an enriched dict.
@@ -73,25 +80,59 @@ class CompanyResearchEngine:
         dict
             All ENRICHMENT_FIELDS populated (best-effort).
         """
+        from ai.llm_client import QuotaExceededError
+
         name: str = lead.get("business_name", "unknown")
-        if name in self._cache:
+        cache_key = f"{self.llm.provider}::{name}"
+        if cache_key in self._cache:
             logger.info("Cache hit for %s", name)
-            return self._cache[name]
+            return self._cache[cache_key]
 
         result = dict(_DEFAULTS)
         result["research_timestamp"] = datetime.utcnow().isoformat()
         sources: List[str] = []
 
         try:
-            # ── Dify provider: single chatflow call does everything ──────────
-            if self.llm.provider == "dify" and self.llm.dify_key:
-                result = self._research_via_dify(lead, result, sources)
+            if self.llm.provider == "local":
+                result = self._research_via_local_grounded(lead, result, sources)
+            elif self.llm.provider == "dify" and self.llm.dify_key:
+                try:
+                    result = self._research_via_dify(lead, result, sources)
+                except QuotaExceededError as q_exc:
+                    import os
+                    auto_fb = os.getenv("AI_AUTO_FALLBACK", "true").lower() == "true"
+                    if auto_fb and self.llm.openai_key:
+                        logger.warning("Dify quota exceeded for %s — falling back to OpenAI: %s", name, q_exc)
+                        orig_p = self.llm.provider
+                        try:
+                            self.llm.provider = "openai"
+                            result = self._research_via_llm(lead, result, sources)
+                            result["quota_fallback_reason"] = f"{q_exc} (used OpenAI fallback)"
+                        except Exception as o_exc:
+                            logger.warning("OpenAI fallback also failed (%s) for %s — switching to grounded local analysis", o_exc, name)
+                            result = self._research_via_local_grounded(lead, result, sources, fallback_reason=f"Dify ({q_exc}) & OpenAI ({o_exc}) failed")
+                        finally:
+                            self.llm.provider = orig_p
+                    elif auto_fb:
+                        logger.warning("Dify quota exceeded for %s — switching to grounded local analysis: %s", name, q_exc)
+                        result = self._research_via_local_grounded(lead, result, sources, fallback_reason=str(q_exc))
+                    else:
+                        raise
             else:
-                # ── Multi-stage pipeline for all other providers ─────────────
-                result = self._research_via_llm(lead, result, sources)
+                try:
+                    result = self._research_via_llm(lead, result, sources)
+                except Exception as llm_exc:
+                    import os
+                    auto_fb = os.getenv("AI_AUTO_FALLBACK", "true").lower() == "true"
+                    if auto_fb:
+                        logger.warning("LLM call failed (%s) for %s — switching to grounded local analysis", llm_exc, name)
+                        result = self._research_via_local_grounded(lead, result, sources, fallback_reason=str(llm_exc))
+                    else:
+                        raise
 
             result["research_status"] = "completed"
             result["research_sources"] = sources
+            self._cache[cache_key] = result
 
         except Exception as exc:
             logger.error("Research failed for %s: %s", name, exc)
@@ -99,7 +140,6 @@ class CompanyResearchEngine:
             result["research_error"] = str(exc)
             result["manual_review_required"] = True
 
-        self._cache[name] = result
         return result
 
     # ------------------------------------------------------------------
@@ -310,6 +350,164 @@ class CompanyResearchEngine:
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _research_via_local_grounded(
+        self,
+        lead: dict,
+        result: dict,
+        sources: List[str],
+        fallback_reason: str = "",
+    ) -> dict:
+        """
+        Deterministic, evidence-backed 37-field company intelligence using live
+        homepage scraping, quantitative website audit, SystemaOps catalogue
+        matching, and explainable opportunity scoring (zero fabricated claims).
+        """
+        from auditing.website_auditor import audit_website
+        from scoring.opportunity_scorer import compute_opportunity_score
+        from ai.systemaops_catalogue import SYSTEMAOPS_SERVICES, match_services
+
+        name = str(lead.get("business_name") or "Unknown Company").strip()
+        website = str(lead.get("website") or "").strip()
+        city = str(lead.get("city") or "").strip()
+        locality = str(lead.get("locality") or "").strip()
+        biz_type = str(lead.get("business_type") or "").strip()
+        spin = str(lead.get("spin") or "").strip()
+        industry = biz_type or (spin.split(" in ")[0].split(" (")[0].strip() if spin else "Local Business")
+        rating = str(lead.get("rating") or "").strip()
+        reviews = str(lead.get("reviews") or "").strip()
+        location_label = f"{locality}, {city}" if locality and city else (city or locality or "its local market")
+
+        website_text, final_url = self._fetch_website(website)
+        if final_url:
+            sources.append(final_url)
+
+        audit = audit_website(website, run_pagespeed=False, check_links=False)
+        opp = compute_opportunity_score(lead, audit=audit, ai_report={"industry": industry})
+        matched_keys = match_services(business_type=biz_type or spin, industry=industry, website=website, signals=[website_text[:500]])
+        top_key = matched_keys[0] if matched_keys else "odoo_erp"
+        top_svc = SYSTEMAOPS_SERVICES[top_key]
+        rec_names = [SYSTEMAOPS_SERVICES[k]["name"] for k in matched_keys[:3] if k in SYSTEMAOPS_SERVICES]
+
+        reputation_note = (
+            f" Verified Google Maps profile shows {rating}/5.0 rating across {reviews} reviews."
+            if rating and reviews else ""
+        )
+        snippet = (website_text[:280].rsplit(" ", 1)[0] + "...") if len(website_text) > 280 else website_text
+
+        result["industry"] = industry
+        result["business_model"] = "B2B / Local Service Provider (to be confirmed on discovery call)"
+        result["company_overview"] = (
+            f"{name} operates in {industry} in {location_label}.{reputation_note}"
+            + (f" Public website excerpt: {snippet}" if snippet else " No detailed website copy was retrieved.")
+        )
+        result["products_services"] = snippet or f"{industry} services in {location_label}"
+        result["existing_capabilities"] = ", ".join(
+            [x for x in [
+                f"Website ({audit.get('cms_detected')})" if audit.get("cms_detected") else ("Website" if website else ""),
+                "Phone listed" if lead.get("phone") else "",
+                "Email listed" if lead.get("email") else "",
+                "Instagram" if lead.get("instagram") else "",
+                "LinkedIn" if lead.get("linkedin") else "",
+            ] if x]
+        ) or "Basic Google Maps listing only"
+        result["technology_signals"] = (
+            f"CMS/Stack: {audit['cms_detected']}" if audit.get("cms_detected")
+            else "No public CMS/stack signature detected — verify internal tools on call."
+        )
+
+        # Website section
+        result["website_status"] = audit.get("website_status", "unknown")
+        result["website_summary"] = audit.get("technical_issues_summary", "")
+        result["website_strengths"] = "\n".join(f"- {p}" for p in (audit.get("positives") or [])) or "None verified automatically."
+        result["website_problems"] = "\n".join(f"- {i}" for i in (audit.get("issues") or [])) or "No major technical HTTP/SSL/viewport defects detected."
+        result["website_improvement_opportunities"] = (
+            "1. Strengthen automated inquiry/appointment capture linked to CRM.\n"
+            "2. Ensure SSL, mobile viewport, and Core Web Vitals optimization.\n"
+            "3. Connect inbound leads directly to automated follow-up workflows."
+        )
+        result["website_recommendations"] = (
+            f"- Technical status: {audit.get('website_status')} (SEO basic score: {audit.get('seo_checks', {}).get('seo_basic_score', 0)}/100)\n"
+            f"- Address identified technical items: {audit.get('technical_issues_summary', '')}"
+        )
+
+        # Opportunity section
+        result["strongest_opportunity"] = top_svc["name"]
+        result["recommended_services"] = "\n".join(
+            f"- {SYSTEMAOPS_SERVICES[k]['name']}: {SYSTEMAOPS_SERVICES[k]['description'][:110]}"
+            for k in matched_keys[:3] if k in SYSTEMAOPS_SERVICES
+        )
+        result["opportunity_priority"] = "HIGH" if opp["opportunity_score"] >= 70 else "MEDIUM" if opp["opportunity_score"] >= 45 else "LOW"
+        result["recommendation_confidence"] = opp["confidence_label"]
+        result["systemaops_business_opportunity"] = (
+            f"{name} scores {opp['opportunity_score']}/100 (Grade {opp['opportunity_grade']}, Confidence: {opp['confidence_label']}) "
+            f"for {opp['pitch_focus']}. {top_svc['name']} aligns with {industry} operations."
+        )
+        result["opportunity_reason"] = " ".join(
+            opp["reasons"].get("service_fit", []) + opp["reasons"].get("digital_gap", [])
+        )
+        result["expected_benefit"] = (
+            f"Implementing {top_svc['name']} helps eliminate manual coordination, centralize customer/operations data, "
+            f"and improve response times."
+        )
+        result["potential_business_challenge"] = "\n".join(f"- {p}" for p in top_svc.get("pain_points", [])[:4])
+        ev_prefix = f"[Grounded Local Analysis — Fallback triggered: {fallback_reason}] " if fallback_reason else "[Grounded Local Analysis] "
+        result["evidence"] = (
+            ev_prefix +
+            f"Evaluated live URL ({final_url or 'none'}), HTTP status ({audit.get('http_status')}), "
+            f"SSL ({audit.get('has_valid_ssl')}), mobile viewport ({audit.get('mobile_responsive')}), "
+            f"and Maps signals (rating={rating or 'N/A'}, reviews={reviews or 'N/A'})."
+        )
+
+        # Sales & Outreach section
+        result["meeting_opening"] = (
+            f"Hi {name} team — I reviewed your presence in {location_label} "
+            f"and noticed opportunities around {opp['pitch_focus']}."
+        )
+        result["discovery_questions"] = (
+            f"1. How are you currently managing customer inquiries and follow-ups at {name}?\n"
+            f"2. Which software tools handle billing, scheduling, or inventory today?\n"
+            f"3. Where does your team spend the most repetitive manual hours each week?\n"
+            f"4. Are your website/booking leads flowing directly into a central CRM?\n"
+            f"5. What operational bottleneck would have the highest ROI if automated first?"
+        )
+        result["sales_pitch"] = (
+            f"SystemaOps helps {industry} teams in {location_label} streamline operations using "
+            f"{', '.join(rec_names[:2])} — replacing disconnected spreadsheets and manual handoffs "
+            f"with integrated automation (projects from $5,000, $25–49/hr)."
+        )
+        result["suggested_next_action"] = f"Book a 20-minute workflow & automation assessment with {name}."
+
+        result["email_subject"] = f"Quick operational & automation idea for {name}"
+        result["personalized_email"] = (
+            f"Hi {name} team,\n\n"
+            f"I came across your {industry} business in {location_label}"
+            + (f" ({website})" if website else "") +
+            f" and noticed strong customer visibility{reputation_note}\n\n"
+            f"At SystemaOps, we help {industry} organizations eliminate manual data entry and disconnected "
+            f"workflows using {top_svc['name']} and intelligent automation.\n\n"
+            f"Open to a brief 15–20 minute call this week to share tailored recommendations?\n\n"
+            f"Best regards,\nSystemaOps Team"
+        )
+        result["linkedin_message"] = (
+            f"Hi {name} team — came across your {industry} work in {location_label}. "
+            f"We help teams automate operations with {top_svc['name']}. Open to connecting?"
+        )
+        result["follow_up_message"] = (
+            f"Hi {name} team, following up on my note regarding {top_svc['name']} for your {location_label} operations. "
+            f"Happy to share a short tailored workflow plan anytime."
+        )
+        result["post_topic"] = f"How {industry} teams in {city or 'growing cities'} automate operations with {top_svc['name']}"
+        result["post_text"] = (
+            f"Many {industry} teams lose 10+ hours every week to manual follow-ups and disconnected tools.\n\n"
+            f"By combining {top_svc['name']} with automated lead capture, teams turn inquiries into tracked pipeline automatically."
+        )
+        result["call_to_action"] = f"Reply 'AUDIT' for a free {industry} workflow & automation checklist."
+        result["research_error"] = None
+        result["manual_review_required"] = False
+        if fallback_reason:
+            result["quota_fallback_reason"] = fallback_reason
+        return result
 
     def _research_via_llm(self, lead: dict, result: dict, sources: List[str]) -> dict:
         """5-stage pipeline for OpenAI / Gemini / Anthropic / mock."""

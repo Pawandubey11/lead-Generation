@@ -141,13 +141,36 @@ def llm_is_configured() -> bool:
 
 
 def get_ai_config() -> Dict[str, Any]:
-    """Return AI configuration info (no secrets exposed)."""
-    provider = os.getenv("AI_PROVIDER", "mock").lower()
+    """Return live AI configuration info (no secrets exposed)."""
+    try:
+        from ai.llm_client import llm_client
+        provider = llm_client.provider
+        model = llm_client.model
+        dify_url = llm_client.dify_url if provider == "dify" else None
+    except Exception:
+        provider = os.getenv("AI_PROVIDER", "mock").lower()
+        model = os.getenv("AI_MODEL", "gpt-4o-mini")
+        dify_url = os.getenv("DIFY_API_URL", "https://api.dify.ai/v1") if provider == "dify" else None
+
     return {
         "provider": provider,
-        "model": os.getenv("AI_MODEL", "gpt-4o-mini"),
+        "model": model,
         "configured": llm_is_configured(),
         "mock_mode": provider == "mock",
+        "local_mode": provider == "local",
         "dify_mode": provider == "dify",
-        "dify_url": os.getenv("DIFY_API_URL", "https://api.dify.ai/v1") if provider == "dify" else None,
+        "dify_url": dify_url,
     }
+
+
+def set_ai_provider(provider: str, model: Optional[str] = None) -> Dict[str, Any]:
+    """Switch active AI provider at runtime and clear stale cache."""
+    from ai.llm_client import llm_client
+    from ai.research_engine import research_engine
+    allowed = {"dify", "local", "mock", "openai", "gemini", "anthropic"}
+    p = (provider or "").strip().lower()
+    if p not in allowed:
+        raise ValueError(f"Unsupported provider '{p}'. Choose from: {', '.join(sorted(allowed))}")
+    llm_client.set_provider(p, model=model)
+    research_engine.clear_cache()
+    return get_ai_config()

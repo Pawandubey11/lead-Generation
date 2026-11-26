@@ -164,5 +164,44 @@ class OptionalProvidersAndEmailTests(unittest.TestCase):
         self.assertEqual(found, ["real@hospital.com"])
 
 
+class AIResilienceAndFallbackTests(unittest.TestCase):
+    def test_dify_quota_fallback_to_grounded_local_and_no_failed_cache(self):
+        from ai.research_engine import CompanyResearchEngine
+        from ai.llm_client import QuotaExceededError
+
+        eng = CompanyResearchEngine()
+        orig_provider = eng.llm.provider
+        orig_key = eng.llm.dify_key
+        try:
+            eng.llm.provider = "dify"
+            eng.llm.dify_key = "app-test-key"
+            lead = {
+                "business_name": "Acme Software Noida",
+                "website": "",
+                "business_type": "Software company",
+                "city": "Noida",
+                "locality": "Sector 62",
+                "rating": "4.6",
+                "reviews": "120",
+            }
+            with patch.object(eng.llm, "call_dify_chatflow", side_effect=QuotaExceededError("Dify quota exceeded (400): Model quota has been exceeded")):
+                with patch.dict(os.environ, {"AI_AUTO_FALLBACK": "false"}):
+                    fail_res = eng.research_company(lead)
+                    self.assertEqual(fail_res["research_status"], "failed")
+                    self.assertIn("quota exceeded", fail_res["research_error"].lower())
+                    # Ensure failed result was NOT cached
+                    self.assertNotIn("dify::Acme Software Noida", eng._cache)
+
+                with patch.dict(os.environ, {"AI_AUTO_FALLBACK": "true"}):
+                    ok_res = eng.research_company(lead)
+                    self.assertEqual(ok_res["research_status"], "completed")
+                    self.assertIn("Acme Software Noida", ok_res["company_overview"])
+                    self.assertIn("Grounded Local Analysis", ok_res["evidence"])
+                    self.assertTrue(bool(ok_res["personalized_email"]))
+        finally:
+            eng.llm.provider = orig_provider
+            eng.llm.dify_key = orig_key
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -230,10 +230,18 @@
 
         <!-- Header -->
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem; flex-wrap:wrap; gap:0.5rem;">
-          <div style="font-size:0.95rem; font-weight:700; color:#a78bfa; display:flex; align-items:center; gap:0.5rem;">
+          <div style="font-size:0.95rem; font-weight:700; color:#a78bfa; display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
             <span>🤖</span>
             <span>AI Business Intelligence</span>
             <span id="ai-mode-badge" style="font-size:0.7rem; background:#4c1d95; color:#c4b5fd; padding:0.2rem 0.5rem; border-radius:999px; font-weight:600;">MOCK MODE</span>
+            <select id="ai-provider-select" onchange="switchAIProvider(this.value)" style="font-size:0.72rem; background:#1e1b4b; color:#e2e8f0; border:1px solid #4c1d95; border-radius:6px; padding:0.2rem 0.45rem; cursor:pointer;">
+              <option value="dify">Dify (gpt-5)</option>
+              <option value="local">Grounded Local (No Quota)</option>
+              <option value="mock">Mock Mode</option>
+              <option value="openai">OpenAI</option>
+              <option value="gemini">Gemini</option>
+              <option value="anthropic">Anthropic</option>
+            </select>
           </div>
           <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
             <button id="btn-ai-select-all" onclick="aiSelectAll()" style="font-size:0.75rem; background:#1e1b4b; color:#a78bfa; border:1px solid #4c1d95; padding:0.3rem 0.7rem; border-radius:6px; cursor:pointer;">Select All</button>
@@ -243,6 +251,9 @@
             <button id="btn-ai-export" onclick="exportEnrichedCSV()" style="font-size:0.8rem; background:#059669; color:#fff; border:none; padding:0.4rem 1rem; border-radius:6px; cursor:pointer;">⬇ Export Enriched CSV</button>
           </div>
         </div>
+
+        <!-- Quota / Provider Error Banner -->
+        <div id="ai-error-banner" style="display:none; margin-bottom:0.85rem; padding:0.6rem 0.85rem; border-radius:8px; background:rgba(245,158,11,0.12); border:1px solid #d97706; color:#fcd34d; font-size:0.78rem;"></div>
 
         <!-- Progress bar -->
         <div id="ai-progress-row" style="display:none; margin-bottom:1rem;">
