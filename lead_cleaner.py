@@ -6,6 +6,8 @@ import requests
 import json
 import math
 import sys
+from urllib.parse import unquote
+
 if hasattr(sys.stdout, "reconfigure"):
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
@@ -42,16 +44,18 @@ if df.empty:
 print(f"\nOriginal Leads: {len(df)}")
 
 # ----------------------------------------
-# CLEAN
+# CLEAN & NORMALIZE
 # ----------------------------------------
 
-# Explicitly cast all potential string/text columns to string to prevent float64 type inference issues
-text_cols = ["business_name", "phone", "website", "address", "instagram", "facebook", "linkedin", "email", "city", "business_type", "country", "spin", "scraped_at", "source_name", "source_url"]
+text_cols = [
+    "business_name", "phone", "website", "address", "instagram", "facebook",
+    "linkedin", "email", "city", "locality", "search_area", "business_type",
+    "country", "spin", "scraped_at", "source_name", "source_url", "rating", "reviews"
+]
 for col in text_cols:
     if col in df.columns:
-        df[col] = df[col].fillna("").astype(str).replace(["nan", "0", "0.0", "None"], "").str.strip()
+        df[col] = df[col].fillna("").astype(str).replace(["nan", "0", "0.0", "None", "null"], "").str.strip()
 
-# Safely handle NaN in all other columns (numeric, boolean, etc.) without raising TypeErrors
 for col in df.columns:
     if col not in text_cols:
         if df[col].dtype == 'object':
@@ -64,15 +68,60 @@ if "spin" not in df.columns:
 if "scraped_at" not in df.columns:
     df["scraped_at"] = ""
 
-df = df.drop_duplicates(subset=["business_name", "spin"], keep="first")
-df = df[~((df["email"] != "") & df.duplicated(subset=["email", "spin"]))]
-df = df[~((df["phone"] != "") & df.duplicated(subset=["phone", "spin"]))]
-df = df[df["business_name"].str.strip() != ""]
+# Drop booking-widget / non-place noise records (e.g. "Haus Dentist - Book online")
+if "source_url" in df.columns:
+    reserve_mask = df["source_url"].astype(str).str.contains("/maps/reserve/", case=False, na=False)
+    if reserve_mask.any():
+        print(f"Removed {int(reserve_mask.sum())} booking-widget noise rows (/maps/reserve/)")
+        df = df[~reserve_mask]
+
+# Clean & normalize emails (URL-unquote %20, strip placeholder junk)
+_EMAIL_RE = re.compile(r'^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,10}$')
+_JUNK_EMAIL_RE = re.compile(
+    r'^(you|yourname|name|username|user|johndoe|john\.doe|janedoe|test|example|sample|demo|noreply|no-reply|donotreply|mailer-daemon|postmaster)@'
+    r'|@(example\.com|domain\.com|email\.com|company\.com|yourdomain\.com|wixpress\.com|sentry\.io|ueni\.com)$',
+    re.IGNORECASE,
+)
+
+def _clean_email_val(val: str) -> str:
+    s = unquote(str(val or "")).strip().strip(".,;:<>\"'")
+    if not s or s.lower() in ("nan", "0", "none"):
+        return ""
+    if not _EMAIL_RE.match(s) or _JUNK_EMAIL_RE.search(s):
+        return ""
+    return s
+
+if "email" in df.columns:
+    df["email"] = df["email"].apply(_clean_email_val)
+
+# Remove rows with empty business name
+df = df[df["business_name"].str.strip() != ""].copy()
+
+# Deduplication:
+# 1. Deduplicate exact same Google Maps Place URL within the same spin
+# 2. Deduplicate same (business_name, address, spin) when address is present
+#    so distinct branches at different addresses are preserved!
+# 3. For listings without address, deduplicate by (business_name, spin)
+df["_name_norm"] = df["business_name"].str.lower().str.strip()
+df["_addr_norm"] = df["address"].str.lower().str.strip() if "address" in df.columns else ""
+df["_phone_norm"] = df["phone"].astype(str).str.replace(r"[^\d+]", "", regex=True)
+
+if "source_url" in df.columns:
+    has_url = df["source_url"].str.strip() != ""
+    df = df[~(has_url & df.duplicated(subset=["source_url", "spin"], keep="first"))]
+
+has_addr = df["_addr_norm"] != ""
+df = df[~(has_addr & df.duplicated(subset=["_name_norm", "_addr_norm", "spin"], keep="first"))]
+df = df[~((~has_addr) & df.duplicated(subset=["_name_norm", "spin"], keep="first"))]
+
+has_ph = df["_phone_norm"].str.len() >= 7
+df = df[~(has_ph & df.duplicated(subset=["_phone_norm", "_name_norm", "spin"], keep="first"))]
+
+df.drop(columns=["_name_norm", "_addr_norm", "_phone_norm"], inplace=True, errors="ignore")
 
 # ----------------------------------------
 # FEATURE ENGINEERING (Vectorized)
 # ----------------------------------------
-# (numpy already imported at top)
 
 has_phone = df["phone"].astype(str).str.strip() != ""
 has_web = df["website"].astype(str).str.strip() != ""
@@ -87,16 +136,20 @@ df["Has Website"] = np.where(has_web, "Yes", "No")
 df["Has Email"] = np.where(has_em, "Yes", "No")
 df["Has Social Media"] = np.where(has_social, "Yes", "No")
 
-filled_count = (has_phone.astype(int) + has_web.astype(int) + has_em.astype(int) +
-                has_ig.astype(int) + has_fb.astype(int) + has_li.astype(int))
+filled_count = (
+    has_phone.astype(int) + has_web.astype(int) + has_em.astype(int) +
+    has_ig.astype(int) + has_fb.astype(int) + has_li.astype(int)
+)
 df["Contact Completeness %"] = (filled_count / 6.0 * 100).round(2)
 
-score = (has_phone.astype(int) * 20 +
-         has_web.astype(int) * 20 +
-         has_em.astype(int) * 40 +
-         has_ig.astype(int) * 10 +
-         has_fb.astype(int) * 5 +
-         has_li.astype(int) * 5)
+score = (
+    has_phone.astype(int) * 20 +
+    has_web.astype(int) * 20 +
+    has_em.astype(int) * 40 +
+    has_ig.astype(int) * 10 +
+    has_fb.astype(int) * 5 +
+    has_li.astype(int) * 5
+)
 df["Lead Score"] = score
 
 priority_conditions = [score >= 70, score >= 40]
@@ -106,33 +159,30 @@ df["Priority"] = np.select(priority_conditions, priority_choices, default="Cold"
 df = df.sort_values(by="Lead Score", ascending=False)
 
 # ----------------------------------------
-# EMAIL QUALITY FILTERING (DQ-001)
+# EMAIL QUALITY FILTERING
 # ----------------------------------------
 
-# Placeholder / generic emails that look valid but bounce or are not decision-maker inboxes
-_PLACEHOLDER_EMAIL_RE = re.compile(
-    r'^(info|contact|admin|hello|support|noreply|no-reply|sales|webmaster|test|example|postmaster|office)@',
+_NON_CONTACTABLE_PREFIX_RE = re.compile(
+    r'^(noreply|no-reply|donotreply|mailer-daemon|test|example|postmaster|you|johndoe|janedoe|sample)@',
     re.IGNORECASE
 )
-_EMAIL_RE = re.compile(r'^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$')
 
 def is_quality_email(email: str) -> bool:
-    """Returns True only for syntactically valid, non-placeholder emails."""
+    """Returns True for deliverable, non-placeholder emails (accepts info@, contact@, sales@, etc. for B2B SMEs)."""
     s = str(email).strip()
     if not s or s in ("nan", "0", "None"):
         return False
     if not _EMAIL_RE.match(s):
         return False
-    if _PLACEHOLDER_EMAIL_RE.match(s):
+    if _NON_CONTACTABLE_PREFIX_RE.match(s) or _JUNK_EMAIL_RE.search(s):
         return False
     return True
 
-# Replace the simple '@' check with the quality check for verified export
 verified_mask = df["email"].apply(is_quality_email) | (df["Contact Completeness %"] >= 50)
 df_verified = df[verified_mask].copy()
 
 # ----------------------------------------
-# SAVE (atomic writes to prevent race conditions with dashboard reads — INFRA-003)
+# SAVE (atomic writes)
 # ----------------------------------------
 
 output_file = os.path.join(OUTPUT_DIR, "final_ai_leads.csv")
@@ -172,15 +222,12 @@ def send_to_n8n(dataframe):
         return
 
     print(f"\n[N8N] Sending {len(dataframe)} leads to N8N webhook...")
-
     headers = {"Content-Type": "application/json"}
     if N8N_WEBHOOK_SECRET:
         headers["X-Webhook-Secret"] = N8N_WEBHOOK_SECRET
 
-    # Convert dataframe to list of dicts
     leads_list = dataframe.to_dict(orient="records")
 
-    # Clean NaN/inf values for safe JSON serialization
     def clean_value(v):
         if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
             return None

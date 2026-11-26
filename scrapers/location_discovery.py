@@ -8,15 +8,9 @@ inside that city so the scraper can search each one separately.
 
 Discovery order:
   1. Manual localities (if provided) — instant, no network
-  2. Nominatim + Overpass API (OpenStreetMap, free, no API key)
-  3. Hardcoded fallback for major cities (used when OSM returns < 3 results)
-
-Usage:
-    from scrapers.location_discovery import LocalityDiscovery
-
-    ld = LocalityDiscovery("Delhi", "India")
-    localities = ld.discover()          # list[dict]
-    queries    = ld.get_search_queries("Restaurants")  # list[dict]
+  2. In-memory cache — instant for repeated searches
+  3. Nominatim + Overpass API (OpenStreetMap, free, no API key, fast timeouts + mirror)
+  4. Hardcoded fallback for major cities (used when OSM fails or returns < 3 results)
 """
 
 from __future__ import annotations
@@ -30,6 +24,9 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+# In-memory cache {(city_lower, country_lower): (source, list[str])}
+_DISCOVERY_CACHE: dict[tuple[str, str], tuple[str, list[str]]] = {}
+
 # ---------------------------------------------------------------------------
 # Hardcoded fallback localities for major cities
 # ---------------------------------------------------------------------------
@@ -39,6 +36,34 @@ FALLBACK_LOCALITIES: dict[str, list[str]] = {
         "Lajpat Nagar", "Janakpuri", "Pitampura", "Nehru Place", "Rajouri Garden",
         "Vasant Kunj", "Greater Kailash", "Hauz Khas", "Preet Vihar", "Mayur Vihar",
         "Punjabi Bagh", "Paschim Vihar", "Uttam Nagar", "Shahdara", "Dilshad Garden",
+    ],
+    "noida": [
+        "Sector 18", "Sector 62", "Sector 63", "Sector 15", "Sector 16",
+        "Sector 50", "Sector 76", "Sector 104", "Sector 125", "Sector 132",
+        "Sector 135", "Sector 142", "Film City", "Noida Extension", "Sector 44",
+    ],
+    "greater noida": [
+        "Alpha 1", "Alpha 2", "Beta 1", "Beta 2", "Gamma 1", "Gamma 2",
+        "Delta 1", "Knowledge Park I", "Knowledge Park II", "Knowledge Park III",
+        "Pari Chowk", "Omega 1", "Techzone 4", "Surajpur", "Greater Noida West",
+    ],
+    "gurgaon": [
+        "Cyber City", "DLF Phase 1", "DLF Phase 2", "DLF Phase 3", "DLF Phase 4",
+        "Sohna Road", "Golf Course Road", "MG Road", "Udyog Vihar", "Sector 14",
+        "Sector 29", "Sector 44", "Sector 45", "Sector 54", "Palam Vihar", "Sushant Lok",
+    ],
+    "gurugram": [
+        "Cyber City", "DLF Phase 1", "DLF Phase 2", "DLF Phase 3", "DLF Phase 4",
+        "Sohna Road", "Golf Course Road", "MG Road", "Udyog Vihar", "Sector 14",
+        "Sector 29", "Sector 44", "Sector 45", "Sector 54", "Palam Vihar", "Sushant Lok",
+    ],
+    "ghaziabad": [
+        "Indirapuram", "Vaishali", "Kaushambi", "Vasundhara", "Raj Nagar",
+        "Raj Nagar Extension", "Crossings Republik", "Kavi Nagar", "Shastri Nagar", "Sahibabad",
+    ],
+    "faridabad": [
+        "Sector 15", "Sector 16", "Sector 21C", "NIT Faridabad", "Neharpar",
+        "Ballabgarh", "Surajkund", "Greenfields", "Sector 37", "Sector 79",
     ],
     "mumbai": [
         "Andheri", "Bandra", "Borivali", "Dadar", "Juhu", "Powai", "Thane",
@@ -51,7 +76,7 @@ FALLBACK_LOCALITIES: dict[str, list[str]] = {
         "Rajajinagar", "Malleshwaram", "Hebbal", "Yeshwanthpur", "BTM Layout",
         "Bellandur", "Sarjapur Road", "Yelahanka", "Banashankari", "Basavanagudi", "MG Road",
     ],
-    "bengaluru": [  # alias
+    "bengaluru": [
         "Koramangala", "Indiranagar", "Whitefield", "HSR Layout", "Jayanagar",
         "Marathahalli", "Electronic City", "Bannerghatta Road", "JP Nagar",
         "Rajajinagar", "Malleshwaram", "Hebbal", "Yeshwanthpur", "BTM Layout", "Bellandur",
@@ -85,6 +110,18 @@ FALLBACK_LOCALITIES: dict[str, list[str]] = {
         "Vastrapur", "Thaltej", "Maninagar", "Naroda", "Odhav",
         "Chandkheda", "Gota", "Prahlad Nagar", "Ambawadi", "Paldi",
         "Memnagar", "Bodakdev", "Vejalpur", "Vastral", "Nikol",
+    ],
+    "jaipur": [
+        "Malviya Nagar", "Vaishali Nagar", "Mansarovar", "C-Scheme", "MI Road",
+        "Raja Park", "Tonk Road", "Jagatpura", "Bapu Nagar", "Sodala",
+    ],
+    "lucknow": [
+        "Gomti Nagar", "Hazratganj", "Aliganj", "Indira Nagar", "Mahanagar",
+        "Aminabad", "Alambagh", "Vikas Nagar", "Jankipuram", "Charbagh",
+    ],
+    "chandigarh": [
+        "Sector 17", "Sector 22", "Sector 35", "Sector 8", "Sector 9",
+        "Sector 34", "Sector 43", "Industrial Area Phase 1", "Manimajra", "Mohali Phase 7",
     ],
     "london": [
         "City of London", "Westminster", "Camden", "Shoreditch", "Canary Wharf",
@@ -191,7 +228,10 @@ class LocalityDiscovery:
     """
 
     NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
-    OVERPASS_URL  = "https://overpass-api.de/api/interpreter"
+    OVERPASS_URLS = [
+        "https://overpass-api.de/api/interpreter",
+    ]
+    OVERPASS_URL = OVERPASS_URLS[0]
     USER_AGENT    = "LeadPulse/1.0 (locality-discovery; contact=local)"
 
     def __init__(
@@ -219,7 +259,12 @@ class LocalityDiscovery:
         if self.manual_localities:
             return self._build_result(self.manual_localities, source="manual")
 
-        # 2. Try OSM Nominatim + Overpass
+        cache_key = (self.city.lower(), self.country.lower())
+        if cache_key in _DISCOVERY_CACHE:
+            src, cached_names = _DISCOVERY_CACHE[cache_key]
+            return self._build_result(cached_names, source=src)
+
+        # 2. Try OSM Nominatim + Overpass (bounded fast timeouts)
         try:
             osm_localities = self._discover_via_osm()
         except Exception as exc:
@@ -227,12 +272,14 @@ class LocalityDiscovery:
             osm_localities = []
 
         if len(osm_localities) >= 3:
+            _DISCOVERY_CACHE[cache_key] = ("nominatim", osm_localities)
             return self._build_result(osm_localities, source="nominatim")
 
         # 3. Fallback — hardcoded dict
         fallback = self._discover_via_fallback()
         if fallback:
             logger.info("Using hardcoded fallback localities for %s", self.city)
+            _DISCOVERY_CACHE[cache_key] = ("fallback", fallback)
             return self._build_result(fallback, source="fallback")
 
         # 4. Last resort — return the city itself so the scraper still works
@@ -269,33 +316,42 @@ class LocalityDiscovery:
     # ------------------------------------------------------------------
 
     def _discover_via_osm(self) -> list[str]:
-        """Query Nominatim for city bbox, then Overpass for neighbourhoods."""
+        """Query Nominatim for city bbox, then Overpass (with mirror fallback) for neighbourhoods."""
         bbox = self._get_city_bbox()
         if not bbox:
             return []
 
-        time.sleep(1)  # OSM rate-limit compliance
+        time.sleep(0.5)  # OSM courtesy pause
 
         south, west, north, east = bbox
         overpass_query = (
-            f"[out:json][timeout:30];\n"
-            f"(\n"
-            f'  node["place"~"suburb|neighbourhood|district|quarter"]'
+            f"[out:json][timeout:6];\n"
+            f"node[\"place\"~\"suburb|neighbourhood|district|quarter\"]"
             f"({south},{west},{north},{east});\n"
-            f'  way["place"~"suburb|neighbourhood|district|quarter"]'
-            f"({south},{west},{north},{east});\n"
-            f");\n"
-            f"out center;"
+            f"out;"
         )
 
-        resp = requests.post(
-            self.OVERPASS_URL,
-            data={"data": overpass_query},
-            timeout=35,
-            headers={"User-Agent": self.USER_AGENT},
-        )
-        resp.raise_for_status()
-        elements = resp.json().get("elements", [])
+        last_exc: Optional[Exception] = None
+        elements: list = []
+        for endpoint in self.OVERPASS_URLS:
+            try:
+                resp = requests.post(
+                    endpoint,
+                    data={"data": overpass_query},
+                    timeout=7,
+                    headers={"User-Agent": self.USER_AGENT},
+                )
+                resp.raise_for_status()
+                elements = resp.json().get("elements", [])
+                last_exc = None
+                break
+            except Exception as exc:
+                last_exc = exc
+                logger.debug("Overpass endpoint %s failed: %s", endpoint, exc)
+                continue
+
+        if last_exc is not None and not elements:
+            raise last_exc
 
         names: list[str] = []
         for el in elements:
@@ -307,8 +363,9 @@ class LocalityDiscovery:
 
     def _get_city_bbox(self) -> Optional[tuple[float, float, float, float]]:
         """Return (south, west, north, east) bounding box for the city via Nominatim."""
+        q = f"{self.city}, {self.country}" if self.country else self.city
         params = {
-            "q":              f"{self.city}, {self.country}",
+            "q":              q,
             "format":         "json",
             "limit":          1,
             "addressdetails": 0,
@@ -316,7 +373,7 @@ class LocalityDiscovery:
         resp = requests.get(
             self.NOMINATIM_URL,
             params=params,
-            timeout=15,
+            timeout=8,
             headers={"User-Agent": self.USER_AGENT},
         )
         resp.raise_for_status()
@@ -324,7 +381,7 @@ class LocalityDiscovery:
         if not results:
             return None
 
-        bbox = results[0].get("boundingbox")  # [south, north, west, east]
+        bbox = results[0].get("boundingbox")
         if not bbox or len(bbox) < 4:
             return None
 
@@ -341,13 +398,13 @@ class LocalityDiscovery:
     def _discover_via_fallback(self) -> list[str]:
         """Return hardcoded localities for known cities (case-insensitive lookup)."""
         city_key = self.city.lower().strip()
-        # Direct match
+        # Direct exact match first (prevents "greater noida" matching "noida" before its own entry)
         if city_key in FALLBACK_LOCALITIES:
             return FALLBACK_LOCALITIES[city_key]
-        # Partial match (e.g. "New Delhi" → "delhi")
-        for key, locs in FALLBACK_LOCALITIES.items():
+        # Partial match longest key first
+        for key in sorted(FALLBACK_LOCALITIES.keys(), key=len, reverse=True):
             if key in city_key or city_key in key:
-                return locs
+                return FALLBACK_LOCALITIES[key]
         return []
 
     # ------------------------------------------------------------------
@@ -358,10 +415,8 @@ class LocalityDiscovery:
         """Filter out noise from Overpass results."""
         if len(name) < 3:
             return False
-        # Skip entries that are just the city or country name
         if name.lower() in (self.city.lower(), self.country.lower()):
             return False
-        # Skip entries containing digits only
         if name.isdigit():
             return False
         return True
@@ -372,7 +427,6 @@ class LocalityDiscovery:
         result: list[str] = []
         for n in names:
             key = n.lower().strip()
-            # Remove city-name suffix (e.g. "Connaught Place, Delhi" → "Connaught Place")
             city_suffix = f", {self.city.lower()}"
             if key.endswith(city_suffix):
                 n = n[:len(n) - len(city_suffix)].strip()

@@ -88,6 +88,11 @@ STRING_FIELDS = [
     "linkedin",
     "email",
     "city",
+    "locality",
+    "search_area",
+    "business_type",
+    "rating",
+    "reviews",
     "has_website",
     "has_email",
     "has_social_media",
@@ -116,7 +121,10 @@ TABLE_FIELDS = [
     "source_url",
 ]
 
-DETAIL_EXTRA_FIELDS = ["address", "city", "has_website", "has_email", "has_social_media"]
+DETAIL_EXTRA_FIELDS = [
+    "address", "city", "locality", "search_area", "business_type",
+    "rating", "reviews", "has_website", "has_email", "has_social_media",
+]
 
 VALID_PRIORITIES = {"Hot", "Warm", "Cold"}
 
@@ -224,16 +232,17 @@ def load_leads() -> Optional[pd.DataFrame]:
     # missing one (older runs, partial pipeline, etc.)
     for col in [
         "business_name", "phone", "website", "address", "instagram",
-        "facebook", "linkedin", "email", "city", "has_website", "has_email",
+        "facebook", "linkedin", "email", "city", "locality", "search_area",
+        "business_type", "rating", "reviews", "has_website", "has_email",
         "has_social_media", "contact_completeness", "lead_score", "priority",
-        "spin", "scraped_at",
+        "spin", "scraped_at", "source_name", "source_url",
     ]:
         if col not in df.columns:
             df[col] = "Legacy Run" if col == "spin" else ("" if col in STRING_FIELDS else 0)
 
     # Clean string columns
     for col in STRING_FIELDS:
-        df[col] = df[col].fillna("").astype(str).str.strip()
+        df[col] = df[col].fillna("").astype(str).replace(["nan", "None", "null"], "").str.strip()
 
     # Clean numeric columns
     df["lead_score"] = pd.to_numeric(df["lead_score"], errors="coerce").fillna(0)

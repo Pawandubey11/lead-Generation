@@ -72,6 +72,17 @@ _status: Dict[str, Any] = {
     "error": None,
     "started_at": None,
     "elapsed_seconds": 0,
+    # Locality tracking
+    "is_locality_mode": False,
+    "localities": [],
+    "current_locality": "",
+    "locality_index": 0,
+    "total_localities": 0,
+    "localities_completed": [],
+    "localities_failed": [],
+    "locality_lead_counts": {},
+    # Stage performance metrics
+    "metrics": {},
 }
 
 _log_buffer: deque = deque(maxlen=MAX_LOG_LINES)
@@ -110,6 +121,15 @@ def _reset_status():
         "error": None,
         "started_at": None,
         "elapsed_seconds": 0,
+        "is_locality_mode": False,
+        "localities": [],
+        "current_locality": "",
+        "locality_index": 0,
+        "total_localities": 0,
+        "localities_completed": [],
+        "localities_failed": [],
+        "locality_lead_counts": {},
+        "metrics": {},
     })
     _log_buffer = deque(maxlen=MAX_LOG_LINES)
 
@@ -189,6 +209,31 @@ def _progress_callback(event_type: str, data: dict):
         elif event_type == "log":
             _add_log(data.get("message", ""))
 
+        elif event_type == "locality_start":
+            _status["current_locality"] = data.get("locality", "")
+            _status["locality_index"] = data.get("locality_index", 0)
+            _status["total_localities"] = data.get("total_localities", 0)
+            _add_log(f"🗺️ Locality {data.get('locality_index', '?')}/{data.get('total_localities', '?')}: {data.get('locality', '?')}")
+
+        elif event_type == "locality_done":
+            loc = data.get("locality", "")
+            count = data.get("locality_leads_count", data.get("city_leads_count", 0))
+            if loc:
+                _status["locality_lead_counts"][loc] = count
+                if loc not in _status["localities_completed"]:
+                    _status["localities_completed"].append(loc)
+
+        elif event_type == "city_summary":
+            loc = data.get("city", "")
+            _add_log(
+                f"⏱️ {loc}: {data.get('leads', 0)}/{data.get('discovered', 0)} leads in "
+                f"{data.get('elapsed_seconds', 0)}s (scroll={data.get('scroll_seconds', 0)}s, "
+                f"maps={data.get('maps_detail_seconds', 0)}s, web={data.get('website_enrich_seconds', 0)}s)"
+            )
+
+        elif event_type == "run_metrics":
+            _status["metrics"] = dict(data)
+
 
 def build_target_location(custom_cities: list[str], country: Optional[str]) -> str:
     city_location = ", ".join(custom_cities) if custom_cities else "Unknown"
@@ -219,7 +264,7 @@ def _update_last_history_entry():
 # Worker thread
 # ---------------------------------------------------------------------------
 
-def _scrape_worker(business_type: str, scope: str, country: Optional[str], cities_str: Optional[str], max_cities: int, max_leads_per_city: int):
+def _scrape_worker(business_type: str, scope: str, country: Optional[str], cities_str: Optional[str], max_cities: int, max_leads_per_city: int, localities: Optional[List[str]] = None):
     """Runs in a background thread. Calls generate_leads() and lead_cleaner."""
     try:
         from scrapers.crawler import (
@@ -230,7 +275,6 @@ def _scrape_worker(business_type: str, scope: str, country: Optional[str], citie
         )
         set_progress_callback(_progress_callback)
 
-        # Remove old progress.txt so past completed cities do not cause skips
         progress_file = os.path.join(PROJECT_ROOT, "output", "progress.txt")
         if os.path.exists(progress_file):
             try:
@@ -239,8 +283,18 @@ def _scrape_worker(business_type: str, scope: str, country: Optional[str], citie
                 pass
 
         custom_cities = None
+        is_locality_mode = False
         target_location = country
-        if scope in ("city", "cities") or cities_str:
+
+        if localities and len(localities) > 0:
+            is_locality_mode = True
+            custom_cities = localities
+            target_location = country or ", ".join(localities[:2])
+            with _lock:
+                _status["is_locality_mode"] = True
+                _status["localities"] = list(localities)
+                _status["total_localities"] = len(localities)
+        elif scope in ("city", "cities") or cities_str:
             scope = "city"
             if cities_str:
                 custom_cities = [c.strip() for c in cities_str.split(",") if c.strip()]
@@ -250,7 +304,9 @@ def _scrape_worker(business_type: str, scope: str, country: Optional[str], citie
 
         with _lock:
             _status["state"] = "running"
-            if scope == "city":
+            if is_locality_mode:
+                _add_log(f"🗺️ Locality mode: {business_type} across {len(localities)} areas in {target_location}")
+            elif scope == "city":
                 _add_log(f"🚀 Starting scrape: {business_type} in custom locations: {target_location}")
             else:
                 _add_log(f"🚀 Starting scrape: {business_type} in {country} (max {max_cities} cities)")
@@ -262,6 +318,7 @@ def _scrape_worker(business_type: str, scope: str, country: Optional[str], citie
             max_cities=max_cities,
             custom_cities=custom_cities,
             max_leads_per_city=max_leads_per_city,
+            is_locality_mode=is_locality_mode,
         )
 
         # ---- Run lead cleaner (same as main.py does) ----
@@ -343,7 +400,7 @@ def _scrape_worker(business_type: str, scope: str, country: Optional[str], citie
 # Public API
 # ---------------------------------------------------------------------------
 
-def start_scrape(business_type: str, scope: str = "country", country: Optional[str] = None, cities: Optional[str] = None, max_cities: int = 30, max_leads_per_city: int = 20) -> Dict[str, Any]:
+def start_scrape(business_type: str, scope: str = "country", country: Optional[str] = None, cities: Optional[str] = None, max_cities: int = 30, max_leads_per_city: int = 20, localities: Optional[List[str]] = None) -> Dict[str, Any]:
     """
     Start a scrape job in the background.
     Returns {"ok": True, "status": "started"} or {"ok": False, "status": "error", "error": "..."}.
@@ -365,7 +422,7 @@ def start_scrape(business_type: str, scope: str = "country", country: Optional[s
         return {"ok": False, "status": "error", "error": "Business type is required", "message": "Business type is required"}
     if scope == "country" and not country:
         return {"ok": False, "status": "error", "error": "Country is required", "message": "Country is required"}
-    if scope == "city" and not cities:
+    if scope == "city" and not cities and not localities:
         return {"ok": False, "status": "error", "error": "Target city is required", "message": "Target city is required"}
     if scope == "country" and max_cities < 1:
         return {"ok": False, "status": "error", "error": "Max cities must be at least 1", "message": "Max cities must be at least 1"}
@@ -378,12 +435,16 @@ def start_scrape(business_type: str, scope: str = "country", country: Optional[s
         _cancel_event.clear()
         _status["state"] = "running"
         _status["business_type"] = business_type
-        location_label = f"City: {cities}" if scope == "city" else country
+        location_label = f"City: {cities or country}" if (scope == "city" or localities) else country
         _status["country"] = location_label
-        total_c = len([c for c in cities.split(",") if c.strip()]) if scope == "city" else max_cities
+        total_c = len(localities) if localities else (len([c for c in cities.split(",") if c.strip()]) if scope == "city" else max_cities)
         _status["max_cities"] = total_c
         _status["total_cities"] = total_c
-        _status["current_city"] = (cities.split(",")[0].strip() if scope == "city" and cities else country) or "Starting..."
+        if localities:
+            _status["is_locality_mode"] = True
+            _status["localities"] = list(localities)
+            _status["total_localities"] = len(localities)
+        _status["current_city"] = (localities[0] if localities else (cities.split(",")[0].strip() if scope == "city" and cities else country)) or "Starting..."
         _status["started_at"] = time.time()
         _status["baseline_leads"] = _count_live_leads()
         _add_log(f"🚀 Initializing scraper for '{business_type}' in {location_label}...")
@@ -392,12 +453,11 @@ def start_scrape(business_type: str, scope: str = "country", country: Optional[s
         spin_str = f"{business_type} in {location_label} ({timestamp_str[:16]})"
         _status["spin"] = spin_str
 
-        # Add to run history (deque is bounded at 50 entries)
         _run_history.append({
             "id": len(_run_history) + 1,
             "business_type": business_type,
             "country": location_label,
-            "max_cities": len([c for c in cities.split(",") if c.strip()]) if scope == "city" else max_cities,
+            "max_cities": total_c,
             "status": "running",
             "timestamp": timestamp_str,
             "leads_found": 0,
@@ -409,7 +469,7 @@ def start_scrape(business_type: str, scope: str = "country", country: Optional[s
 
     _worker_thread = threading.Thread(
         target=_scrape_worker,
-        args=(business_type, scope, country, cities, max_cities, max_leads_per_city),
+        args=(business_type, scope, country, cities, max_cities, max_leads_per_city, localities),
         daemon=True,
         name="scraper-worker",
     )
