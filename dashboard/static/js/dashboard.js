@@ -33,6 +33,9 @@
     industry: '',
     city: '',
     country: '',
+    spin: '',
+    latestSpin: '',
+    batchMode: 'latest',
     verifiedOnly: true,
     selectedLeadIds: new Set(),
     selectedFields: new Set(ALL_FIELDS.filter(f => f.default).map(f => f.key)),
@@ -167,7 +170,7 @@
       }
       const data = await res.json();
       state.leads = data.data || data.leads || [];
-      
+      await syncBatchControls();
       applyLocalFilter();
     } catch (err) {
       console.error('Error loading leads:', err);
@@ -184,9 +187,126 @@
       if (!res.ok) return;
       const data = await res.json();
       state.leads = data.data || data.leads || [];
+      await syncBatchControls();
       applyLocalFilter();
     } catch (err) {
       console.error('Error refreshing live leads:', err);
+    }
+  }
+
+  async function syncBatchControls() {
+    try {
+      const res = await fetch('/api/spins', { cache: 'no-store' });
+      const data = res.ok ? await res.json() : { spins: [], latest_spin: '' };
+      const spins = data.spins || [];
+      state.latestSpin = data.latest_spin || (spins.length ? spins[spins.length - 1] : '');
+
+      // Count leads per spin
+      const counts = {};
+      state.leads.forEach(l => {
+        const s = l.spin || '';
+        if (s) counts[s] = (counts[s] || 0) + 1;
+      });
+
+      const select = $('filter-spin');
+      if (select) {
+        select.innerHTML = `<option value="">All Historical Searches (${state.leads.length})</option>`;
+        // Show newest first
+        [...spins].reverse().forEach(sp => {
+          const opt = document.createElement('option');
+          opt.value = sp;
+          const cnt = counts[sp] || 0;
+          const isLatest = (sp === state.latestSpin) ? ' [Latest]' : '';
+          opt.textContent = `${sp}${isLatest} (${cnt})`;
+          select.appendChild(opt);
+        });
+      }
+
+      if (state.batchMode === 'latest' && state.latestSpin) {
+        state.spin = state.latestSpin;
+      } else if (state.batchMode === 'all') {
+        state.spin = '';
+      } else if (state.spin && !spins.includes(state.spin)) {
+        state.spin = state.latestSpin || '';
+      }
+
+      if (select) {
+        select.value = state.spin || '';
+      }
+      updateBatchButtonsUI();
+    } catch (e) {
+      console.warn('Could not sync batch controls:', e);
+    }
+  }
+
+  function updateBatchButtonsUI() {
+    const btnLatest = $('btn-batch-latest');
+    const btnAll = $('btn-batch-all');
+    if (!btnLatest || !btnAll) return;
+
+    if (state.batchMode === 'latest' && state.spin) {
+      btnLatest.className = 'btn btn-primary btn-sm';
+      btnAll.className = 'btn btn-secondary btn-sm';
+    } else if (state.batchMode === 'all' || !state.spin) {
+      btnLatest.className = 'btn btn-secondary btn-sm';
+      btnAll.className = 'btn btn-primary btn-sm';
+    } else {
+      btnLatest.className = 'btn btn-secondary btn-sm';
+      btnAll.className = 'btn btn-secondary btn-sm';
+    }
+  }
+
+  function selectLatestBatch() {
+    state.batchMode = 'latest';
+    state.spin = state.latestSpin || '';
+    const select = $('filter-spin');
+    if (select) select.value = state.spin;
+    updateBatchButtonsUI();
+    applyLocalFilter();
+    showToast(state.spin ? `Showing latest search: ${state.spin}` : 'No search batches found.');
+  }
+
+  function selectAllBatches() {
+    state.batchMode = 'all';
+    state.spin = '';
+    const select = $('filter-spin');
+    if (select) select.value = '';
+    updateBatchButtonsUI();
+    applyLocalFilter();
+    showToast(`Showing all ${state.leads.length} historical leads.`);
+  }
+
+  function onBatchSelectChange(val) {
+    state.spin = val || '';
+    if (!state.spin) {
+      state.batchMode = 'all';
+    } else if (state.spin === state.latestSpin) {
+      state.batchMode = 'latest';
+    } else {
+      state.batchMode = 'custom';
+    }
+    updateBatchButtonsUI();
+    applyLocalFilter();
+  }
+
+  async function clearAllLeads() {
+    if (!confirm('Are you sure you want to clear all saved leads and start fresh? This cannot be undone.')) {
+      return;
+    }
+    try {
+      const res = await fetch('/api/leads/clear', { method: 'POST' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      state.leads = [];
+      state.filteredLeads = [];
+      state.spin = '';
+      state.latestSpin = '';
+      state.batchMode = 'latest';
+      await syncBatchControls();
+      applyLocalFilter();
+      showToast('All leads cleared! Ready for a fresh search.');
+    } catch (err) {
+      console.error('Error clearing leads:', err);
+      showToast('Failed to clear leads.', false);
     }
   }
 
@@ -202,6 +322,11 @@
 
   function applyLocalFilter() {
     state.filteredLeads = state.leads.filter(lead => {
+      // 0. Search Batch (spin) filter
+      if (state.spin && (lead.spin || '') !== state.spin) {
+        return false;
+      }
+
       // 1. Verification check
       if (state.verifiedOnly && !isLeadVerified(lead)) {
         return false;
@@ -754,8 +879,9 @@
     const industry = state.industry ? encodeURIComponent(state.industry) : '';
     const city = state.city ? encodeURIComponent(state.city) : '';
     const country = state.country ? encodeURIComponent(state.country) : '';
+    const spin = state.spin ? encodeURIComponent(state.spin) : '';
 
-    const url = `/api/export/custom?format=${format}&fields=${fields}&verified_only=${verifiedOnly}&search=${search}&industry=${industry}&city=${city}&country=${country}`;
+    const url = `/api/export/custom?format=${format}&fields=${fields}&verified_only=${verifiedOnly}&search=${search}&industry=${industry}&city=${city}&country=${country}&spin=${spin}`;
     showToast(`Downloading ${format.toUpperCase()} export matching current filters...`);
     window.location.href = url;
   }
@@ -781,6 +907,10 @@
     copyText,
     exportData,
     onLocalityModeToggle,
+    selectLatestBatch,
+    selectAllBatches,
+    onBatchSelectChange,
+    clearAllLeads,
   };
 
   document.addEventListener('DOMContentLoaded', init);

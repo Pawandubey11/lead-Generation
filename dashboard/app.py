@@ -446,8 +446,31 @@ def api_startup_leads(
 @app.get("/api/spins")
 def api_spins():
     return {
-        "spins": svc.get_unique_spins()
+        "spins": svc.get_unique_spins(),
+        "latest_spin": svc.get_latest_spin(),
     }
+
+
+@app.post("/api/leads/clear")
+def api_clear_leads(user_id: int = Depends(get_current_user_id)):
+    """Clear all scraped and cleaned CSV datasets for a fresh start."""
+    import glob
+    output_dir = os.path.join(PROJECT_ROOT, "output")
+    removed = []
+    for fname in ("local_business_leads.csv", "final_ai_leads.csv", "verified_leads_export.csv"):
+        fpath = os.path.join(output_dir, fname)
+        if os.path.exists(fpath):
+            try:
+                os.remove(fpath)
+                removed.append(fname)
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to remove {fname}: {e}")
+    # Also clear cached AI reports in memory
+    try:
+        ai_svc.clear_cache()
+    except Exception:
+        pass
+    return {"ok": True, "removed": removed, "message": "All leads cleared successfully."}
 
 
 # ---------------------------------------------------------------------------
