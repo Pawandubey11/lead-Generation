@@ -281,7 +281,9 @@ def load_leads() -> Optional[pd.DataFrame]:
         df["phone"].str.lower() + " " +
         df["email"].str.lower() + " " +
         df["website"].str.lower() + " " +
-        df["city"].str.lower()
+        df["city"].str.lower() + " " +
+        df["locality"].str.lower() + " " +
+        df["business_type"].str.lower()
     )
 
     # Store the CSV mtime hash so the frontend can skip no-op refreshes
@@ -449,6 +451,8 @@ def apply_filters(
             filtered["city"].astype(str).str.lower().str.contains(city_clean, na=False)
             | filtered["address"].astype(str).str.lower().str.contains(city_clean, na=False)
         )
+        if "locality" in filtered.columns:
+            mask = mask | (filtered["locality"].astype(str).str.lower().str.contains(city_clean, na=False))
         filtered = filtered[mask]
 
     if country and country.lower() not in ("all", "none", ""):
@@ -1004,6 +1008,10 @@ CUSTOM_FIELD_LABEL_MAP = {
     "website": "Website",
     "address": "Street Address",
     "city": "City",
+    "locality": "Locality",
+    "business_type": "Category / Industry",
+    "rating": "Rating",
+    "reviews": "Reviews",
     "lead_score": "Lead Quality Score",
     "priority": "Priority",
     "contact_completeness": "Contact Completeness %",

@@ -13,6 +13,10 @@
     { key: 'phone', label: 'Phone Number', default: true },
     { key: 'website', label: 'Website', default: true },
     { key: 'city', label: 'City', default: true },
+    { key: 'locality', label: 'Locality', default: false },
+    { key: 'business_type', label: 'Category', default: false },
+    { key: 'rating', label: 'Rating', default: false },
+    { key: 'reviews', label: 'Reviews', default: false },
     { key: 'address', label: 'Street Address', default: true },
     { key: 'lead_score', label: 'Quality Score (0-100)', default: true },
     { key: 'priority', label: 'Priority (Hot/Warm/Cold)', default: true },
@@ -209,10 +213,12 @@
         const name = (lead.business_name || '').toLowerCase();
         const email = (lead.email || '').toLowerCase();
         const city = (lead.city || '').toLowerCase();
+        const locality = (lead.locality || '').toLowerCase();
+        const bizType = (lead.business_type || '').toLowerCase();
         const phone = (lead.phone || '').toLowerCase();
         const spin = (lead.spin || '').toLowerCase();
         
-        let match = name.includes(q) || email.includes(q) || city.includes(q) || phone.includes(q) || spin.includes(q);
+        let match = name.includes(q) || email.includes(q) || city.includes(q) || locality.includes(q) || bizType.includes(q) || phone.includes(q) || spin.includes(q);
         if (!match && (q === 'b2b' || q === 'b2b software' || q === 'b2b companies')) {
           const b2bTerms = ['software', 'it', 'saas', 'cloud', 'web', 'agency', 'consulting', 'cyber', 'analytics', 'erp', 'wholesale', 'b2b', 'distributor', 'manufacturing', 'logistics', 'unternehmen'];
           match = b2bTerms.some(term => spin.includes(term) || name.includes(term));
@@ -227,13 +233,14 @@
         const ind = state.industry.toLowerCase();
         const spin = (lead.spin || '').toLowerCase();
         const name = (lead.business_name || '').toLowerCase();
+        const bizType = (lead.business_type || '').toLowerCase();
         
         let match = false;
         if (ind === 'b2b' || ind === 'b2b software' || ind === 'b2b companies') {
           const b2bTerms = ['software', 'it', 'saas', 'cloud', 'web', 'agency', 'consulting', 'cyber', 'analytics', 'erp', 'wholesale', 'b2b', 'distributor', 'manufacturing', 'logistics', 'unternehmen'];
-          match = b2bTerms.some(term => spin.includes(term) || name.includes(term));
+          match = b2bTerms.some(term => spin.includes(term) || name.includes(term) || bizType.includes(term));
         } else {
-          match = spin.includes(ind) || name.includes(ind);
+          match = spin.includes(ind) || name.includes(ind) || bizType.includes(ind);
         }
         if (!match) {
           return false;
@@ -244,8 +251,9 @@
       if (state.city && state.city.toLowerCase() !== 'all') {
         const c = state.city.toLowerCase();
         const leadCity = (lead.city || '').toLowerCase();
+        const locality = (lead.locality || '').toLowerCase();
         const addr = (lead.address || '').toLowerCase();
-        if (!leadCity.includes(c) && !addr.includes(c)) {
+        if (!leadCity.includes(c) && !locality.includes(c) && !addr.includes(c)) {
           return false;
         }
       }
