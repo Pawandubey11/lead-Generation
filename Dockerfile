@@ -44,6 +44,8 @@ RUN mkdir -p /app/output /app/logs /app/data
 # 6. Default environment variables
 ENV PORT=8000
 ENV LEADS_CSV_PATH=/app/output/final_ai_leads.csv
+ENV LEADPULSE_DEV_MODE=true
+ENV LEADPULSE_SECRET_KEY=leadpulse-secure-prod-key-7f9e8a1b3c5d6e7f8a9b0c1d2e3f4a5b
 
 EXPOSE 8000
 

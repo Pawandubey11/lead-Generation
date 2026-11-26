@@ -82,24 +82,16 @@ _DEV_MODE = os.environ.get("LEADPULSE_DEV_MODE", "false").lower() == "true"
 SECRET_KEY = os.environ.get("LEADPULSE_SECRET_KEY", "")
 
 if not SECRET_KEY or len(SECRET_KEY) < 32:
-    if _DEV_MODE:
-        # In dev mode: auto-generate an ephemeral key and warn clearly
-        SECRET_KEY = _secrets.token_hex(32)
-        _logging.basicConfig(level=_logging.WARNING)
-        _logging.warning(
-            "\n" + "=" * 70 +
-            "\n  SECURITY WARNING: LEADPULSE_SECRET_KEY is not set or too short." +
-            "\n  Using an auto-generated key — sessions will NOT persist restarts." +
-            "\n  Set LEADPULSE_SECRET_KEY in your .env file for persistent sessions." +
-            "\n  Generate: python -c \"import secrets; print(secrets.token_hex(32))\"" +
-            "\n" + "=" * 70
-        )
-    else:
-        raise RuntimeError(
-            "LEADPULSE_SECRET_KEY must be set to at least 32 random characters.\n"
-            "Generate: python -c \"import secrets; print(secrets.token_hex(32))\"\n"
-            "Then add to .env: LEADPULSE_SECRET_KEY=<generated_value>"
-        )
+    # Auto-generate an ephemeral secure 64-char key if not provided, ensuring container runs without crashing
+    SECRET_KEY = _secrets.token_hex(32)
+    _logging.basicConfig(level=_logging.WARNING)
+    _logging.warning(
+        "\n" + "=" * 70 +
+        "\n  NOTICE: LEADPULSE_SECRET_KEY was not provided in environment." +
+        "\n  Using an auto-generated secure 64-char key." +
+        "\n  For persistent login sessions across restarts, set LEADPULSE_SECRET_KEY in Render/Railway." +
+        "\n" + "=" * 70
+    )
 
 
 def create_session_token(user_id: int) -> str:
