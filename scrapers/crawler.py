@@ -1120,8 +1120,20 @@ def scrape_city(business_type, city, p, browser, page, partial_save_callback=Non
 
     t_details_elapsed = time.time() - t_details_start
 
+    # Save extracted city leads immediately before website enrichment
+    if city_leads and partial_save_callback:
+        partial_save_callback(city_leads, len(business_links), len(business_links))
+
+    # Release Chromium context memory before website enrichment (prevents 512MB container OOM)
+    try:
+        page.context.close()
+    except Exception:
+        pass
+    import gc
+    gc.collect()
+
     # ---- Concurrent Website Enrichment (emails + socials) ----
-    t_web_elapsed = enrich_leads_websites(city_leads, max_workers=6)
+    t_web_elapsed = enrich_leads_websites(city_leads, max_workers=3)
 
     if city_leads and partial_save_callback:
         partial_save_callback(city_leads, len(business_links), len(business_links))
