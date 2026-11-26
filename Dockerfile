@@ -2,8 +2,13 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies for Playwright/Chromium
-RUN apt-get update && apt-get install -y \
+# Prevent Python from writing .pyc and buffer stdout/stderr
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
+
+# 1. Install system dependencies required by Playwright & Chromium
+RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     curl \
     libglib2.0-0 \
@@ -23,20 +28,24 @@ RUN apt-get update && apt-get install -y \
     libasound2t64 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
+# 2. Install Python dependencies
 COPY requirements.txt .
-RUN pip cache purge || true && pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Chromium browser for Playwright
-RUN python -m playwright install chromium
+# 3. Install Chromium browser binaries and dependencies for Playwright
+RUN python -m playwright install --with-deps chromium
 
-# Create output directory so the app can write CSVs
-RUN mkdir -p /app/output /app/logs
-
-# Copy project source
+# 4. Copy the entire application code
 COPY . .
 
-# Mount point for retrieving output files from host
-VOLUME ["/app/output"]
+# 5. Create directories for data and logs
+RUN mkdir -p /app/output /app/logs /app/data
 
-CMD ["python", "main.py"]
+# 6. Default environment variables
+ENV PORT=8000
+ENV LEADS_CSV_PATH=/app/output/final_ai_leads.csv
+
+EXPOSE 8000
+
+# 7. Start FastAPI web dashboard using dynamic PORT assigned by cloud host
+CMD ["sh", "-c", "uvicorn dashboard.app:app --host 0.0.0.0 --port ${PORT:-8000}"]

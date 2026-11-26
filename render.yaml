@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: leadpulse-leadgen
+    env: docker
+    dockerfilePath: Dockerfile
+    plan: free
+    region: frankfurt
+    healthCheckPath: /api/health
+    envVars:
+      - key: LEADPULSE_DEV_MODE
+        value: "false"
+      - key: AI_PROVIDER
+        value: "openai"
+      - key: AI_MODEL
+        value: "gpt-4o-mini"
+      - key: AI_AUTO_FALLBACK
+        value: "true"
+      - key: LEADS_CSV_PATH
+        value: "/app/output/final_ai_leads.csv"
+    disk:
+      name: leadpulse-data
+      mountPath: /app/output
+      sizeGB: 1
