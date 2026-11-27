@@ -422,52 +422,93 @@ lead Generation/
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Quick Start (Clone & Run)
 
-### Option 1 — Local (Recommended for Development)
+LeadPulse is **clone-and-run ready** on **Windows, Linux, and macOS**. You do **not** need to manually install Playwright browsers, create databases, or configure an API key just to get started.
 
-```powershell
-# 1. Clone the repository
-git clone https://github.com/Pawandubey11/lead-Generation.git
-cd "lead Generation"
+### Prerequisites
+- **Git** — [Download Git](https://git-scm.com/downloads)
+- **Python 3.10+** — [Download Python](https://www.python.org/downloads/) *(Windows users: check **"Add Python to PATH"** during installation)*
 
-# 2. Create virtual environment
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+---
 
-# 3. Install dependencies
-pip install -r requirements.txt
-pip install -r requirements-dev.txt
-
-# 4. Install Playwright browser
-.\.venv\Scripts\playwright.exe install chromium
-
-# 5. Start the dashboard
-cd dashboard
-$env:PYTHONPATH = (Get-Location).Path + "\.."
-..\.venv\Scripts\uvicorn.exe app:app --host 0.0.0.0 --port 8000
-
-# 6. Open browser
-# http://localhost:8000
-```
-
-### Option 2 — Docker (Recommended for Production)
+### Step 1 — Clone the Repository
 
 ```bash
-# 1. Clone the repository
 git clone https://github.com/Pawandubey11/lead-Generation.git
-cd "lead Generation"
-
-# 2. Configure environment (optional)
-cp .env.example .env
-# Edit .env to add your LLM API key
-
-# 3. Start with Docker Compose
-docker-compose up --build
-
-# 4. Open browser
-# http://localhost:8000
+cd lead-Generation
 ```
+
+---
+
+### Step 2 — Run (Automatic Setup + Launch)
+
+#### 🪟 Windows
+Run in **Command Prompt / PowerShell**, or simply **double-click `start.bat`** in File Explorer:
+
+```powershell
+python start.py
+```
+
+#### 🐧 Linux / 🍎 macOS
+Run using the cross-platform launcher:
+
+```bash
+python3 start.py
+```
+
+Or use the dedicated shell scripts:
+
+```bash
+chmod +x setup.sh run-dashboard.sh
+./setup.sh
+./run-dashboard.sh
+```
+
+**What `start.py` / `setup.sh` does automatically on first run:**
+1. Creates an isolated Python virtual environment (`.venv`).
+2. Installs all Python dependencies from `requirements.txt` and `dashboard/requirements.txt`.
+3. Downloads the Playwright Chromium browser (~150 MB, one-time only; includes OS deps on Linux).
+4. Copies `.env.example` → `.env` if `.env` does not exist yet.
+5. Creates `output/` and `logs/` directories and auto-initialises SQLite tables.
+6. Launches the FastAPI dashboard at **`http://127.0.0.1:8000`**.
+
+---
+
+### Step 3 — (Optional) Add Your API Key
+
+> **No API key is required to scrape Google Maps, explore localities, clean/score leads, or export CSV/Excel.**  
+> By default, AI research runs in `mock` mode with sample intelligence reports.
+
+To enable **real AI company research & outreach generation**, open the generated `.env` file and add your preferred key:
+
+```dotenv
+AI_PROVIDER=gemini          # mock | gemini | openai | anthropic
+GEMINI_API_KEY=AIza...      # or OPENAI_API_KEY / ANTHROPIC_API_KEY
+```
+
+Restart the dashboard (`Ctrl+C`, then `python start.py`) for `.env` changes to take effect.
+
+---
+
+### Step 4 — Open the Dashboard
+
+Open your browser and go to:
+
+👉 **http://127.0.0.1:8000**
+
+---
+
+### 🐳 Alternative — Docker (Production / Any OS)
+
+```bash
+git clone https://github.com/Pawandubey11/lead-Generation.git
+cd lead-Generation
+cp .env.example .env        # Optional: edit .env to add your API key
+docker-compose up --build
+```
+
+Then open **http://localhost:8000** in your browser.
 
 ---
 
