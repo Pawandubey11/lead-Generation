@@ -316,7 +316,14 @@
         </div>
 
         <!-- Lead selection table -->
-        <div style="font-size:0.75rem; color:#6b7280; margin-bottom:0.5rem;">Select leads to research:</div>
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem; margin-bottom:0.5rem; flex-wrap:wrap;">
+          <div style="font-size:0.75rem; color:#6b7280;">Select leads to research or export:</div>
+          <div style="display:flex; align-items:center; gap:0.4rem; flex:1; max-width:420px;">
+            <input id="ai-lead-search" type="text" placeholder="🔍 Search company, city, or category..." oninput="filterAILeads()" style="flex:1; font-size:0.78rem; background:#0f0f1a; color:#e2e8f0; border:1px solid #4c1d95; border-radius:6px; padding:0.35rem 0.65rem; outline:none;" />
+            <button id="btn-ai-clear-search" onclick="clearAILeadSearch()" style="display:none; font-size:0.72rem; background:#2d2d4e; color:#cbd5e1; border:none; border-radius:6px; padding:0.35rem 0.6rem; cursor:pointer;">✕ Clear</button>
+            <span id="ai-search-count" style="font-size:0.72rem; color:#9ca3af; white-space:nowrap;"></span>
+          </div>
+        </div>
         <div id="ai-lead-table" style="max-height:220px; overflow-y:auto; border:1px solid #2d2d4e; border-radius:8px; background:#0f0f1a;">
           <div id="ai-lead-rows" style="padding:0.5rem;"></div>
         </div>

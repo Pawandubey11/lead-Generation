@@ -1126,15 +1126,59 @@ async function refreshAILeadList() {
   } catch (e) { console.warn('AI lead list refresh error', e); }
 }
 
+function getFilteredAILeads() {
+  const q = (AI.searchQuery || '').trim().toLowerCase();
+  if (!q) return AI.allLeads;
+  return AI.allLeads.filter(ld => {
+    const hay = [
+      ld.business_name,
+      ld.city,
+      ld.locality,
+      ld.business_type,
+      ld.spin,
+      ld.phone,
+    ].filter(Boolean).join(' ').toLowerCase();
+    return hay.includes(q);
+  });
+}
+
+function filterAILeads() {
+  const inp = document.getElementById('ai-lead-search');
+  AI.searchQuery = inp ? inp.value : '';
+  const clearBtn = document.getElementById('btn-ai-clear-search');
+  if (clearBtn) clearBtn.style.display = AI.searchQuery.trim() ? '' : 'none';
+  renderAILeadRows();
+}
+
+function clearAILeadSearch() {
+  const inp = document.getElementById('ai-lead-search');
+  if (inp) inp.value = '';
+  AI.searchQuery = '';
+  const clearBtn = document.getElementById('btn-ai-clear-search');
+  if (clearBtn) clearBtn.style.display = 'none';
+  renderAILeadRows();
+}
+
 function renderAILeadRows() {
   const container = document.getElementById('ai-lead-rows');
   if (!container) return;
   const reports = window._aiReports || {};
+  const filtered = getFilteredAILeads();
+  const countEl = document.getElementById('ai-search-count');
+  if (countEl) {
+    countEl.textContent = AI.searchQuery && AI.searchQuery.trim()
+      ? `${filtered.length} / ${AI.allLeads.length}`
+      : `${AI.allLeads.length} leads`;
+  }
   if (AI.allLeads.length === 0) {
     container.innerHTML = '<div style="padding:0.75rem; font-size:0.8rem; color:#6b7280;">No leads available yet.</div>';
     return;
   }
-  container.innerHTML = AI.allLeads.map((ld) => {
+  if (filtered.length === 0) {
+    container.innerHTML = '<div style="padding:0.75rem; font-size:0.8rem; color:#6b7280;">No matching companies found for "' + escHtml(AI.searchQuery) + '".</div>';
+    return;
+  }
+  container.innerHTML = filtered.map((ld) => {
     const name = ld.business_name || '';
     const enc = encodeURIComponent(name);
     const checked = AI.selectedNames.has(name);
@@ -1156,11 +1200,15 @@ function renderAILeadRows() {
         statusHtml = '<span style="font-size:0.72rem; color:#fbbf24;">⏳</span>';
       }
     }
+    const meta = [ld.city || ld.locality, ld.business_type].filter(Boolean).join(' · ');
     return '<div class="ai-lead-row">' +
       '<input type="checkbox" ' + (checked ? 'checked' : '') +
         ' onchange="toggleAILead(decodeURIComponent(\'' + enc + '\'), this.checked)">' +
       '<span class="ai-status-dot" style="background:' + dotColor + '"></span>' +
-      '<span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + escHtml(name || 'Unknown') + '</span>' +
+      '<span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' +
+        escHtml(name || 'Unknown') +
+        (meta ? '<span style="font-size:0.7rem; color:#6b7280; margin-left:0.45rem;">(' + escHtml(meta) + ')</span>' : '') +
+      '</span>' +
       statusHtml +
       (rep && rep.research_status === 'completed'
         ? '<button class="ai-view-btn" onclick="viewAIReport(decodeURIComponent(\'' + enc + '\'))">View →</button>'
@@ -1176,11 +1224,12 @@ function toggleAILead(name, checked) {
 }
 
 function aiSelectAll() {
-  const allSelected = AI.allLeads.length > 0 && AI.allLeads.every(ld => !ld.business_name || AI.selectedNames.has(ld.business_name));
+  const targetLeads = getFilteredAILeads();
+  const allSelected = targetLeads.length > 0 && targetLeads.every(ld => !ld.business_name || AI.selectedNames.has(ld.business_name));
   if (allSelected) {
-    AI.selectedNames.clear();
+    targetLeads.forEach(ld => { if (ld.business_name) AI.selectedNames.delete(ld.business_name); });
   } else {
-    AI.allLeads.forEach(ld => { if (ld.business_name) AI.selectedNames.add(ld.business_name); });
+    targetLeads.forEach(ld => { if (ld.business_name) AI.selectedNames.add(ld.business_name); });
   }
   const btn = document.getElementById('btn-ai-select-all');
   if (btn) btn.textContent = allSelected ? 'Select All' : 'Deselect All';
@@ -1385,7 +1434,43 @@ function copyAIText(id) {
 }
 
 async function exportEnrichedCSV() {
-  window.location.href = '/api/ai/export/enriched';
+  try {
+    let url = '/api/ai/export/enriched';
+    if (AI.selectedNames.size > 0 && AI.selectedNames.size < AI.allLeads.length) {
+      url += '?names=' + encodeURIComponent(Array.from(AI.selectedNames).join('||'));
+    }
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      let msg = `Export failed (HTTP ${resp.status})`;
+      try { const err = await resp.json(); if (err.detail) msg = err.detail; } catch (_) {}
+      if (typeof showToast === 'function') showToast(msg, 'error');
+      else alert(msg);
+      return;
+    }
+    const blob = await resp.blob();
+    if (!blob || blob.size === 0) {
+      if (typeof showToast === 'function') showToast('No leads available to export.', 'warning');
+      else alert('No leads available to export.');
+      return;
+    }
+    const dlUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = dlUrl;
+    a.download = 'systemaops_enriched_leads.csv';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(dlUrl);
+    if (typeof showToast === 'function') {
+      const countMsg = (AI.selectedNames.size > 0 && AI.selectedNames.size < AI.allLeads.length)
+        ? `Exported ${AI.selectedNames.size} selected enriched lead(s)!`
+        : 'Exported all enriched leads!';
+      showToast(countMsg, 'success');
+    }
+  } catch (e) {
+    if (typeof showToast === 'function') showToast('Export error: ' + e.message, 'error');
+    else alert('Export error: ' + e.message);
+  }
 }
 
 // ---- Expose to global ----
@@ -1395,6 +1480,8 @@ window.stopAIResearch = stopAIResearch;
 window.retryFailedResearch = retryFailedResearch;
 window.aiSelectAll = aiSelectAll;
 window.toggleAILead = toggleAILead;
+window.filterAILeads = filterAILeads;
+window.clearAILeadSearch = clearAILeadSearch;
 window.viewAIReport = viewAIReport;
 window.closeAIReport = closeAIReport;
 window.switchAITab = switchAITab;

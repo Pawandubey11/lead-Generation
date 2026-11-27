@@ -546,7 +546,7 @@ def build_export_filename(
 
 @app.get("/api/export/csv")
 def export_csv(
-    user_id: int = Depends(require_authenticated_user),
+    user_id: int = Depends(get_current_user_id),
     search: Optional[str] = Query(None),
     priority: Optional[str] = Query(None),
     min_score: Optional[float] = Query(None, ge=0, le=100),
@@ -581,7 +581,7 @@ def export_csv(
 
 @app.get("/api/export/excel")
 def export_excel(
-    user_id: int = Depends(require_authenticated_user),
+    user_id: int = Depends(get_current_user_id),
     search: Optional[str] = Query(None),
     priority: Optional[str] = Query(None),
     min_score: Optional[float] = Query(None, ge=0, le=100),
@@ -616,7 +616,7 @@ def export_excel(
 
 @app.get("/api/export/custom")
 def export_custom(
-    user_id: int = Depends(require_authenticated_user),
+    user_id: int = Depends(get_current_user_id),
     format: str = Query("csv", description="csv | excel"),
     fields: Optional[str] = Query(None, description="Comma separated fields e.g. business_name,email,phone,website,city"),
     search: Optional[str] = Query(None),
@@ -653,7 +653,7 @@ def export_custom(
 
 
 @app.get("/api/export/latest/csv")
-def export_latest_csv(user_id: int = Depends(require_authenticated_user)):
+def export_latest_csv(user_id: int = Depends(get_current_user_id)):
     output_dir = os.path.join(_PARENT_DIR, "output")
     file_path = os.path.join(output_dir, "germany_automotive_leads_latest.csv")
     if not os.path.exists(file_path):
@@ -666,7 +666,7 @@ def export_latest_csv(user_id: int = Depends(require_authenticated_user)):
 
 
 @app.get("/api/export/latest/excel")
-def export_latest_excel(user_id: int = Depends(require_authenticated_user)):
+def export_latest_excel(user_id: int = Depends(get_current_user_id)):
     output_dir = os.path.join(_PARENT_DIR, "output")
     file_path = os.path.join(output_dir, "germany_automotive_leads_latest.xlsx")
     if not os.path.exists(file_path):
@@ -965,14 +965,25 @@ def ai_all_reports():
 
 
 @app.get("/api/ai/export/enriched")
-def ai_export_enriched(user_id: int = Depends(require_authenticated_user)):
+def ai_export_enriched(
+    user_id: int = Depends(get_current_user_id),
+    names: Optional[str] = Query(None, description="Optional comma-separated business names to export"),
+    only_researched: bool = Query(False, description="Export only leads with AI research reports"),
+):
     """Export leads merged with AI research as an enriched CSV."""
     df = svc.load_leads()
     leads = df.to_dict(orient="records") if df is not None else []
+    if names:
+        wanted = {n.strip().lower() for n in names.split("||") if n.strip()}
+        if wanted:
+            leads = [ld for ld in leads if str(ld.get("business_name", "")).strip().lower() in wanted]
+    if only_researched:
+        reports = ai_svc.get_all_reports()
+        leads = [ld for ld in leads if str(ld.get("business_name", "")).strip() in reports]
     csv_bytes = ai_svc.export_enriched_csv(leads)
     return Response(
         content=csv_bytes,
-        media_type="text/csv",
+        media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": "attachment; filename=systemaops_enriched_leads.csv"},
     )
 
