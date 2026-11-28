@@ -1065,6 +1065,9 @@ const AI = {
   currentReport: null,
   currentTab: 'overview',
   allLeads: [],
+  searchQuery: '',
+  collapsedBatches: new Set(),
+  knownBatches: new Set(),
 };
 
 function updateAIModeBadge(cfg) {
@@ -1119,7 +1122,7 @@ async function initAIPanel() {
 
 async function refreshAILeadList() {
   try {
-    const data = await fetch('/api/leads?page=1&page_size=200').then(r => r.json());
+    const data = await fetch('/api/leads?page=1&page_size=2000&sort_by=scraped_at&sort_order=desc').then(r => r.json());
     AI.allLeads = data.data || data.leads || [];
     renderAILeadRows();
     document.getElementById('ai-stat-total').textContent = AI.selectedNames.size;
@@ -1159,14 +1162,117 @@ function clearAILeadSearch() {
   renderAILeadRows();
 }
 
+function parseBatchSpin(spin) {
+  const raw = String(spin || '').trim() || 'Legacy Run';
+  const m = raw.match(/^(.+?)\s*\((\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2})?)\)\s*$/);
+  if (m) {
+    return { raw, topic: m[1].trim(), timestamp: m[2].trim() };
+  }
+  return { raw, topic: raw, timestamp: '' };
+}
+
+function buildAIBatches(leads) {
+  const map = new Map();
+  leads.forEach(ld => {
+    const spinKey = String(ld.spin || '').trim() || 'Legacy Run';
+    if (!map.has(spinKey)) {
+      map.set(spinKey, { spin: spinKey, leads: [], maxTs: '' });
+    }
+    const g = map.get(spinKey);
+    g.leads.push(ld);
+    const ts = String(ld.scraped_at || '').trim();
+    if (ts && ts > g.maxTs) g.maxTs = ts;
+  });
+
+  const groups = Array.from(map.values());
+  groups.forEach(g => {
+    const parsed = parseBatchSpin(g.spin);
+    g.topic = parsed.topic;
+    g.displayTime = parsed.timestamp || (g.maxTs ? g.maxTs.slice(0, 16).replace('T', ' ') : '');
+    g.sortKey = g.spin === 'Legacy Run' ? '' : (g.maxTs || parsed.timestamp || '');
+  });
+
+  // Newest batch first; Legacy Run always at the bottom
+  groups.sort((a, b) => {
+    if (a.spin === 'Legacy Run' && b.spin !== 'Legacy Run') return 1;
+    if (b.spin === 'Legacy Run' && a.spin !== 'Legacy Run') return -1;
+    return b.sortKey.localeCompare(a.sortKey);
+  });
+
+  const total = groups.length;
+  groups.forEach((g, idx) => {
+    g.batchNumber = total - idx;
+  });
+  return groups;
+}
+
+function toggleAIBatchCollapse(encSpin) {
+  const spin = decodeURIComponent(encSpin);
+  if (AI.collapsedBatches.has(spin)) AI.collapsedBatches.delete(spin);
+  else AI.collapsedBatches.add(spin);
+  renderAILeadRows();
+}
+
+function selectAIBatch(encSpin) {
+  const spin = decodeURIComponent(encSpin);
+  const filtered = getFilteredAILeads().filter(ld => (String(ld.spin || '').trim() || 'Legacy Run') === spin);
+  const allSel = filtered.length > 0 && filtered.every(ld => !ld.business_name || AI.selectedNames.has(ld.business_name));
+  if (allSel) {
+    filtered.forEach(ld => { if (ld.business_name) AI.selectedNames.delete(ld.business_name); });
+  } else {
+    filtered.forEach(ld => { if (ld.business_name) AI.selectedNames.add(ld.business_name); });
+  }
+  renderAILeadRows();
+  document.getElementById('ai-stat-total').textContent = AI.selectedNames.size;
+}
+
+function renderSingleAILeadRow(ld, reports) {
+  const name = ld.business_name || '';
+  const enc = encodeURIComponent(name);
+  const checked = AI.selectedNames.has(name);
+  const rep = reports[name];
+  let dotColor = '#4b5563';
+  let statusHtml = '';
+  if (rep) {
+    if (rep.research_status === 'completed') {
+      dotColor = rep.quota_fallback_reason ? '#fbbf24' : '#34d399';
+      statusHtml = rep.quota_fallback_reason
+        ? '<span style="font-size:0.7rem; color:#fbbf24;" title="Quota exceeded — grounded local analysis generated">⚡ Local Fallback</span>'
+        : '<span style="font-size:0.75rem; color:#34d399;">✓</span>';
+    } else if (rep.research_status === 'failed') {
+      dotColor = '#f87171';
+      const errTitle = escHtml(rep.research_error || 'Research failed');
+      statusHtml = '<span style="font-size:0.7rem; color:#f87171; cursor:help;" title="' + errTitle + '">✗ ' + errTitle.slice(0, 48) + '</span>';
+    } else {
+      dotColor = '#fbbf24';
+      statusHtml = '<span style="font-size:0.72rem; color:#fbbf24;">⏳</span>';
+    }
+  }
+  const meta = [ld.city || ld.locality, ld.business_type].filter(Boolean).join(' · ');
+  return '<div class="ai-lead-row">' +
+    '<input type="checkbox" ' + (checked ? 'checked' : '') +
+      ' onchange="toggleAILead(decodeURIComponent(\'' + enc + '\'), this.checked)">' +
+    '<span class="ai-status-dot" style="background:' + dotColor + '"></span>' +
+    '<span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' +
+      escHtml(name || 'Unknown') +
+      (meta ? '<span style="font-size:0.7rem; color:#6b7280; margin-left:0.45rem;">(' + escHtml(meta) + ')</span>' : '') +
+    '</span>' +
+    statusHtml +
+    (rep && rep.research_status === 'completed'
+      ? '<button class="ai-view-btn" onclick="viewAIReport(decodeURIComponent(\'' + enc + '\'))">View →</button>'
+      : '') +
+    '</div>';
+}
+
 function renderAILeadRows() {
   const container = document.getElementById('ai-lead-rows');
   if (!container) return;
   const reports = window._aiReports || {};
   const filtered = getFilteredAILeads();
+  const isSearching = Boolean(AI.searchQuery && AI.searchQuery.trim());
   const countEl = document.getElementById('ai-search-count');
   if (countEl) {
-    countEl.textContent = AI.searchQuery && AI.searchQuery.trim()
+    countEl.textContent = isSearching
       ? `${filtered.length} / ${AI.allLeads.length}`
       : `${AI.allLeads.length} leads`;
   }
@@ -1178,42 +1284,63 @@ function renderAILeadRows() {
     container.innerHTML = '<div style="padding:0.75rem; font-size:0.8rem; color:#6b7280;">No matching companies found for "' + escHtml(AI.searchQuery) + '".</div>';
     return;
   }
-  container.innerHTML = filtered.map((ld) => {
-    const name = ld.business_name || '';
-    const enc = encodeURIComponent(name);
-    const checked = AI.selectedNames.has(name);
-    const rep = reports[name];
-    let dotColor = '#4b5563';
-    let statusHtml = '';
-    if (rep) {
-      if (rep.research_status === 'completed') {
-        dotColor = rep.quota_fallback_reason ? '#fbbf24' : '#34d399';
-        statusHtml = rep.quota_fallback_reason
-          ? '<span style="font-size:0.7rem; color:#fbbf24;" title="Dify quota exceeded — grounded local analysis generated">⚡ Local Fallback</span>'
-          : '<span style="font-size:0.75rem; color:#34d399;">✓</span>';
-      } else if (rep.research_status === 'failed') {
-        dotColor = '#f87171';
-        const errTitle = escHtml(rep.research_error || 'Research failed');
-        statusHtml = '<span style="font-size:0.7rem; color:#f87171; cursor:help;" title="' + errTitle + '">✗ ' + errTitle.slice(0, 48) + '</span>';
-      } else {
-        dotColor = '#fbbf24';
-        statusHtml = '<span style="font-size:0.72rem; color:#fbbf24;">⏳</span>';
-      }
+
+  // Build batch numbering from allLeads so Batch #N stays stable even while searching
+  const allBatches = buildAIBatches(AI.allLeads);
+  const batchNumMap = new Map(allBatches.map(b => [b.spin, b.batchNumber]));
+
+  // Default collapse state: expand newest batch (index 0), collapse older unseen batches
+  allBatches.forEach((b, idx) => {
+    if (!AI.knownBatches.has(b.spin)) {
+      AI.knownBatches.add(b.spin);
+      if (idx > 0) AI.collapsedBatches.add(b.spin);
     }
-    const meta = [ld.city || ld.locality, ld.business_type].filter(Boolean).join(' · ');
-    return '<div class="ai-lead-row">' +
-      '<input type="checkbox" ' + (checked ? 'checked' : '') +
-        ' onchange="toggleAILead(decodeURIComponent(\'' + enc + '\'), this.checked)">' +
-      '<span class="ai-status-dot" style="background:' + dotColor + '"></span>' +
-      '<span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' +
-        escHtml(name || 'Unknown') +
-        (meta ? '<span style="font-size:0.7rem; color:#6b7280; margin-left:0.45rem;">(' + escHtml(meta) + ')</span>' : '') +
-      '</span>' +
-      statusHtml +
-      (rep && rep.research_status === 'completed'
-        ? '<button class="ai-view-btn" onclick="viewAIReport(decodeURIComponent(\'' + enc + '\'))">View →</button>'
-        : '') +
+  });
+
+  const visibleBatches = buildAIBatches(filtered);
+  container.innerHTML = visibleBatches.map((batch) => {
+    const bNum = batchNumMap.get(batch.spin) || batch.batchNumber;
+    const encSpin = encodeURIComponent(batch.spin);
+    const collapsed = !isSearching && AI.collapsedBatches.has(batch.spin);
+
+    let doneCnt = 0, failCnt = 0, pendCnt = 0;
+    let allBatchSelected = batch.leads.length > 0;
+    batch.leads.forEach(ld => {
+      const n = ld.business_name || '';
+      if (n && !AI.selectedNames.has(n)) allBatchSelected = false;
+      const rep = reports[n];
+      if (rep && rep.research_status === 'completed') doneCnt++;
+      else if (rep && rep.research_status === 'failed') failCnt++;
+      else pendCnt++;
+    });
+
+    const statusBadge =
+      `<span style="color:#34d399;">${doneCnt}✓</span>` +
+      (failCnt ? ` · <span style="color:#f87171;">${failCnt}✗</span>` : '') +
+      (pendCnt ? ` · <span style="color:#9ca3af;">${pendCnt} pending</span>` : '');
+
+    const headerHtml =
+      '<div style="display:flex; align-items:center; justify-content:space-between; gap:0.5rem; padding:0.45rem 0.65rem; background:#181633; border:1px solid #312e81; border-radius:6px; margin-bottom:0.25rem; flex-wrap:wrap;">' +
+        `<div onclick="toggleAIBatchCollapse('${encSpin}')" style="display:flex; align-items:center; gap:0.45rem; cursor:pointer; flex:1; min-width:200px;">` +
+          `<span style="font-size:0.7rem; color:#a78bfa; width:12px;">${collapsed ? '▶' : '▼'}</span>` +
+          `<span style="font-size:0.7rem; font-weight:700; background:#4c1d95; color:#e9d5ff; padding:0.1rem 0.45rem; border-radius:4px;">Batch #${bNum}</span>` +
+          `<span style="font-size:0.8rem; font-weight:600; color:#e2e8f0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escHtml(batch.topic)}</span>` +
+          (batch.displayTime ? `<span style="font-size:0.7rem; color:#94a3b8;">· ${escHtml(batch.displayTime)}</span>` : '') +
+        '</div>' +
+        '<div style="display:flex; align-items:center; gap:0.6rem; font-size:0.72rem;">' +
+          `<span style="color:#cbd5e1; font-weight:600;">${batch.leads.length} lead${batch.leads.length === 1 ? '' : 's'}</span>` +
+          `<span style="color:#64748b;">(${statusBadge})</span>` +
+          `<button onclick="selectAIBatch('${encSpin}')" style="font-size:0.7rem; background:${allBatchSelected ? '#4c1d95' : '#1e1b4b'}; color:#c4b5fd; border:1px solid #4c1d95; padding:0.18rem 0.55rem; border-radius:4px; cursor:pointer;">${allBatchSelected ? 'Deselect Batch' : 'Select Batch'}</button>` +
+        '</div>' +
       '</div>';
+
+    const rowsHtml = collapsed
+      ? ''
+      : '<div style="padding-left:0.5rem; margin-bottom:0.55rem;">' +
+          batch.leads.map(ld => renderSingleAILeadRow(ld, reports)).join('') +
+        '</div>';
+
+    return '<div class="ai-batch-group">' + headerHtml + rowsHtml + '</div>';
   }).join('');
 }
 
@@ -1482,6 +1609,8 @@ window.aiSelectAll = aiSelectAll;
 window.toggleAILead = toggleAILead;
 window.filterAILeads = filterAILeads;
 window.clearAILeadSearch = clearAILeadSearch;
+window.toggleAIBatchCollapse = toggleAIBatchCollapse;
+window.selectAIBatch = selectAIBatch;
 window.viewAIReport = viewAIReport;
 window.closeAIReport = closeAIReport;
 window.switchAITab = switchAITab;

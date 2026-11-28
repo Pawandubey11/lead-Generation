@@ -379,7 +379,7 @@ def get_charts() -> Dict[str, Any]:
 
 SORTABLE_COLUMNS = {
     "business_name", "phone", "email", "website", "lead_score",
-    "priority", "contact_completeness",
+    "priority", "contact_completeness", "scraped_at",
 }
 
 
