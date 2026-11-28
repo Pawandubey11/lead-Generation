@@ -184,6 +184,50 @@ verified_mask = df["email"].apply(is_quality_email) | (df["Contact Completeness 
 df_verified = df[verified_mask].copy()
 
 # ----------------------------------------
+# BATCH ROTATION (keep newest batches up to MAX_ACTIVE_LEADS, never split latest batch)
+# ----------------------------------------
+MAX_ACTIVE_LEADS = int(os.getenv("MAX_ACTIVE_LEADS", "200"))
+if MAX_ACTIVE_LEADS > 0 and len(df) > MAX_ACTIVE_LEADS and "spin" in df.columns:
+    spin_col = df["spin"].fillna("Legacy Run").astype(str).str.strip().replace("", "Legacy Run")
+    ts_col = df["scraped_at"].fillna("").astype(str).str.strip() if "scraped_at" in df.columns else pd.Series([""] * len(df), index=df.index)
+    batch_stats = []
+    for sp, idx in df.groupby(spin_col, sort=False).groups.items():
+        max_ts = ts_col.loc[idx].max() if len(idx) > 0 else ""
+        sort_key = "" if sp == "Legacy Run" else str(max_ts)
+        batch_stats.append((sp, len(idx), sort_key))
+    # Sort newest batch first; Legacy Run last
+    batch_stats.sort(key=lambda x: (0 if x[0] != "Legacy Run" else 1, x[2]), reverse=False)
+    # Reverse sort_key for non-legacy so newest is first
+    non_legacy = sorted([b for b in batch_stats if b[0] != "Legacy Run"], key=lambda x: x[2], reverse=True)
+    legacy = [b for b in batch_stats if b[0] == "Legacy Run"]
+    ordered_batches = non_legacy + legacy
+
+    kept_spins = []
+    running_total = 0
+    for i, (sp, cnt, _) in enumerate(ordered_batches):
+        if i == 0 or (running_total + cnt <= MAX_ACTIVE_LEADS):
+            kept_spins.append(sp)
+            running_total += cnt
+        else:
+            break
+
+    if len(kept_spins) < len(ordered_batches):
+        df = df[spin_col.isin(set(kept_spins))].copy()
+        df_verified = df[df["email"].apply(is_quality_email) | (df["Contact Completeness %"] >= 50)].copy()
+        print(f"Batch rotation: kept {len(kept_spins)}/{len(ordered_batches)} newest batches ({len(df)} leads)")
+        # Also trim raw local_business_leads.csv to retained spins so old batches don't accumulate
+        try:
+            raw_df = pd.read_csv(input_file)
+            if "spin" in raw_df.columns:
+                raw_spin = raw_df["spin"].fillna("Legacy Run").astype(str).str.strip().replace("", "Legacy Run")
+                raw_trimmed = raw_df[raw_spin.isin(set(kept_spins))]
+                _tmp_raw = input_file + ".tmp"
+                raw_trimmed.to_csv(_tmp_raw, index=False)
+                os.replace(_tmp_raw, input_file)
+        except Exception as _rot_err:
+            print(f"Batch rotation raw trim skipped: {_rot_err}")
+
+# ----------------------------------------
 # SAVE (atomic writes)
 # ----------------------------------------
 

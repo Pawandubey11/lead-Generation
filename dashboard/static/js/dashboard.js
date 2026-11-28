@@ -994,6 +994,9 @@
           resetScraperButtons();
           showToast('Scraping completed! Fresh dataset loaded.');
           await loadInitialLeads();
+          if (typeof refreshAILeadList === 'function') {
+            await refreshAILeadList();
+          }
           renderCoveragePanel(s);
         }
       }
@@ -1827,3 +1830,4 @@ window.openLeadInspector = openLeadInspector;
 window.closeLeadInspector = closeLeadInspector;
 window.runSelectedLeadAudit = runSelectedLeadAudit;
 window.saveCRMUpdate = saveCRMUpdate;
+window.refreshAILeadList = refreshAILeadList;

@@ -3,13 +3,20 @@ Background research queue — thread-based async processing for the dashboard.
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
 import threading
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+_CACHE_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "output",
+    "ai_research_cache.json",
+)
 
 
 class ResearchService:
@@ -32,6 +39,29 @@ class ResearchService:
             "fallback_count": 0,
         }
         self._thread: Optional[threading.Thread] = None
+        self._load_persisted_results()
+
+    def _load_persisted_results(self) -> None:
+        try:
+            if os.path.isfile(_CACHE_FILE):
+                with open(_CACHE_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    self._status["results"] = data
+        except Exception as exc:
+            logger.warning("Could not load AI research cache: %s", exc)
+
+    def _save_persisted_results(self) -> None:
+        try:
+            os.makedirs(os.path.dirname(_CACHE_FILE), exist_ok=True)
+            with self._lock:
+                snapshot = dict(self._status["results"])
+            tmp = _CACHE_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(snapshot, f, ensure_ascii=False)
+            os.replace(tmp, _CACHE_FILE)
+        except Exception as exc:
+            logger.warning("Could not save AI research cache: %s", exc)
 
     # ------------------------------------------------------------------
     # Public API
@@ -139,6 +169,7 @@ class ResearchService:
                             self._status["last_error"] = result.get("research_error")
                         if name in self._status["queue"]:
                             self._status["queue"].remove(name)
+                    self._save_persisted_results()
                 except Exception as exc:
                     logger.error("Worker error for %s: %s", name, exc)
                     with self._lock:
@@ -148,6 +179,7 @@ class ResearchService:
                             "research_error": str(exc),
                             "manual_review_required": True,
                         }
+                    self._save_persisted_results()
 
                 time.sleep(0.3)  # small pause between companies
 
